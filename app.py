@@ -700,6 +700,10 @@ if compute_btn or "route_data" not in st.session_state:
     st.session_state.origin   = origin_sel
     st.session_state.dest     = dest_sel
     st.session_state.computed = True
+    # Reset zoom/center when route changes
+    if "map_zoom" in st.session_state: del st.session_state["map_zoom"]
+    if "map_center_lat" in st.session_state: del st.session_state["map_center_lat"]
+    if "map_center_lon" in st.session_state: del st.session_state["map_center_lon"]
 
 origin_name = st.session_state.get("origin", origin_sel)
 dest_name   = st.session_state.get("dest",   dest_sel)
@@ -800,7 +804,7 @@ tab1, tab2, tab3 = st.tabs([
 #  TAB 1 — WEATHER MAP
 # ╚═══════════════════════════════════════════════════════════════
 with tab1:
-    map_col, wx_col = st.columns([3, 1])
+    map_col, wx_col = st.columns([4, 1])
 
     with map_col:
         # Build Plotly map (better than folium for this use case)
@@ -816,14 +820,10 @@ with tab1:
         # Storm zones
         if show_storms:
             storm_zones = [
-                ("Bay of Bengal",     14,  88,  3.5, "#ef4444"),
-                ("Arabian Sea",       15,  63,  3.0, "#ef4444"),
-                ("W Pacific Typhoons",18, 135,  5.0, "#dc2626"),
-                ("Gulf of Mexico",    24, -90,  4.5, "#ef4444"),
-                ("N Atlantic Storms", 50, -30,  6.0, "#f97316"),
-                ("S Indian Ocean",   -15,  75,  4.5, "#ef4444"),
-                ("Caribbean",         18, -70,  4.0, "#ef4444"),
-                ("Philippines",       15, 125,  3.5, "#dc2626"),
+                ("Gulf of Mexico",    24,  -90, 3.5, "#ef4444"),
+                ("Caribbean",         18,  -70, 3.0, "#ef4444"),
+                ("E Pacific Storms",  18, -110, 3.0, "#f97316"),
+                ("Great Plains",      38,  -98, 2.5, "#f59e0b"),
             ]
             for name, lat, lon, sz, col in storm_zones:
                 # Draw circle approximation using scatter
@@ -855,8 +855,8 @@ with tab1:
 
         # Jet stream
         if show_jetstream:
-            jet_lats = [-5, 5, 12, 22, 32, 44, 50, 52, 50, 46]
-            jet_lons = [10, 20, 38, 52, 68, 80, 92, 105, 120, 135]
+            jet_lats = [32, 35, 38, 40, 42, 43, 42, 40]
+            jet_lons = [-120, -115, -110, -105, -100, -95, -90, -85]
             fig_map.add_trace(go.Scattermapbox(
                 lat=jet_lats, lon=jet_lons,
                 mode="lines",
@@ -866,18 +866,21 @@ with tab1:
                 hovertemplate="Subtropical Jet Stream<extra></extra>",
             ))
 
-        # All 4 routes (dimmed)
-        for r in routes:
+        # Draw alt routes first (behind), then best route on top
+        sorted_routes = [r for r in routes if not r.get("is_best")] + [r for r in routes if r.get("is_best")]
+        for r in sorted_routes:
             wpts = r["waypoints"]
             rlats = [p[0] for p in wpts]
             rlons = [p[1] for p in wpts]
             is_best = r.get("is_best", False)
+            # Best route: thick solid line; alt routes: thinner, semi-transparent
             fig_map.add_trace(go.Scattermapbox(
                 lat=rlats, lon=rlons,
-                mode="lines",
-                line=dict(color=r["color"], width=4 if is_best else 1.5),
-                opacity=0.9 if is_best else 0.35,
-                name=r["name"],
+                mode="lines+markers" if is_best else "lines",
+                line=dict(color=r["color"], width=5 if is_best else 2),
+                marker=dict(size=6, color=r["color"]) if is_best else dict(size=0),
+                opacity=1.0 if is_best else 0.55,
+                name=("★ " if is_best else "") + r["name"],
                 hovertemplate=f"{r['name']}<br>{r['dist_km']:,} km · {r['time_h']}h<extra></extra>",
             ))
 
@@ -925,14 +928,32 @@ with tab1:
             for i, w in enumerate(wp_weather)
         ]
 
+        # Outer ring (dark border effect)
         fig_map.add_trace(go.Scattermapbox(
-            lat=wp_lats[1:-1], lon=wp_lons[1:-1],
+            lat=wp_lats, lon=wp_lons,
+            mode="markers",
+            marker=dict(size=30, color="rgba(5,15,30,0.85)", opacity=1.0),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        # Coloured dot
+        fig_map.add_trace(go.Scattermapbox(
+            lat=wp_lats, lon=wp_lons,
+            mode="markers",
+            marker=dict(size=22, color=wp_colors, opacity=1.0),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        # Weather icon text on top
+        fig_map.add_trace(go.Scattermapbox(
+            lat=wp_lats, lon=wp_lons,
             mode="markers+text",
-            marker=dict(size=14, color=wp_colors[1:-1], opacity=0.9),
-            text=wp_texts[1:-1],
-            hovertext=wp_hover[1:-1],
+            marker=dict(size=0, color="rgba(0,0,0,0)"),
+            text=wp_texts,
+            hovertext=wp_hover,
             hovertemplate="%{hovertext}<extra></extra>",
             name="Waypoints",
+            showlegend=True,
         ))
 
         # SIGMETs
@@ -956,48 +977,109 @@ with tab1:
                 ))
 
         # Origin & Destination
+        # Origin: large aircraft marker with label box
         fig_map.add_trace(go.Scattermapbox(
             lat=[orig_lat], lon=[orig_lon],
             mode="markers+text",
-            marker=dict(size=16, color="#38bdf8"),
+            marker=dict(size=22, color="#38bdf8"),
             text=[f"✈ {icao_orig}"],
             textposition="top right",
-            hovertemplate=f"✈ {icao_orig}<extra></extra>",
+            hovertemplate=f"<b>ORIGIN: {icao_orig}</b><br>{origin_name.split(chr(8212))[1].strip()}<extra></extra>",
             name="Origin",
         ))
+        # Destination
         fig_map.add_trace(go.Scattermapbox(
             lat=[dest_lat], lon=[dest_lon],
             mode="markers+text",
-            marker=dict(size=16, color="#a78bfa"),
-            text=[f"⬛ {icao_dest}"],
+            marker=dict(size=22, color="#a78bfa"),
+            text=[f"■ {icao_dest}"],
             textposition="top right",
-            hovertemplate=f"⬛ {icao_dest}<extra></extra>",
+            hovertemplate=f"<b>DEST: {icao_dest}</b><br>{dest_name.split(chr(8212))[1].strip()}<extra></extra>",
             name="Destination",
         ))
 
         center_lat = (orig_lat + dest_lat) / 2
         center_lon = (orig_lon + dest_lon) / 2
 
+        # Auto-zoom: fit the full route in view with padding
+        all_route_lats = [p[0] for r in routes for p in r["waypoints"]]
+        all_route_lons = [p[1] for r in routes for p in r["waypoints"]]
+        all_route_lats += [orig_lat, dest_lat]
+        all_route_lons += [orig_lon, dest_lon]
+        lat_span = max(all_route_lats) - min(all_route_lats)
+        lon_span = max(all_route_lons) - min(all_route_lons)
+        max_span = max(lat_span, lon_span, 0.1)
+        # Mapbox zoom: each +1 zoom halves the visible area
+        # zoom 4 ≈ 40° view, zoom 6 ≈ 10°, zoom 8 ≈ 2.5°
+        import math as _math
+        auto_zoom = min(9.5, max(4.0, _math.log2(160.0 / max_span) + 1.0))
+        center_lat = (max(all_route_lats) + min(all_route_lats)) / 2
+        center_lon = (max(all_route_lons) + min(all_route_lons)) / 2
+
+        # Zoom level stored in session state
+        if "map_zoom" not in st.session_state:
+            st.session_state.map_zoom = auto_zoom
+        if "map_center_lat" not in st.session_state:
+            st.session_state.map_center_lat = center_lat
+        if "map_center_lon" not in st.session_state:
+            st.session_state.map_center_lon = center_lon
+
+        # Zoom controls row
+        zc1, zc2, zc3, zc4, zc5 = st.columns([1,1,1,1,6])
+        with zc1:
+            if st.button("＋", key="zoom_in", help="Zoom In"):
+                st.session_state.map_zoom = min(st.session_state.map_zoom + 1, 18)
+        with zc2:
+            if st.button("－", key="zoom_out", help="Zoom Out"):
+                st.session_state.map_zoom = max(st.session_state.map_zoom - 1, 1)
+        with zc3:
+            if st.button("⌖", key="zoom_fit", help="Fit Route"):
+                st.session_state.map_zoom = auto_zoom
+                st.session_state.map_center_lat = center_lat
+                st.session_state.map_center_lon = center_lon
+        with zc4:
+            if st.button("⊕", key="zoom_orig", help="Go to Origin"):
+                st.session_state.map_zoom = 10
+                st.session_state.map_center_lat = orig_lat
+                st.session_state.map_center_lon = orig_lon
+        with zc5:
+            st.markdown(
+                f"<div style='font-family:Orbitron,monospace;font-size:10px;color:#1e6b8a;"
+                f"letter-spacing:2px;padding-top:6px'>ZOOM {st.session_state.map_zoom:.1f}"
+                f" &nbsp;·&nbsp; SCROLL TO ZOOM &nbsp;·&nbsp; DRAG TO PAN</div>",
+                unsafe_allow_html=True
+            )
+
         fig_map.update_layout(
             mapbox=dict(
                 style="carto-darkmatter",
-                center=dict(lat=center_lat, lon=center_lon),
-                zoom=2.5,
+                center=dict(lat=st.session_state.map_center_lat,
+                            lon=st.session_state.map_center_lon),
+                zoom=st.session_state.map_zoom,
             ),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0,r=0,t=0,b=0),
-            height=520,
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=600,
             showlegend=True,
             legend=dict(
-                bgcolor="rgba(5,15,30,0.85)",
+                bgcolor="rgba(5,15,30,0.92)",
                 bordercolor="rgba(56,189,248,0.2)",
                 borderwidth=1,
-                font=dict(color="#64748b", size=11),
-                x=0.01, y=0.99,
+                font=dict(color="#94a3b8", size=10),
+                x=0.01, y=0.01,
+                xanchor="left", yanchor="bottom",
+                itemsizing="constant",
+                tracegroupgap=2,
             ),
+            uirevision="map_view",
         )
-        st.plotly_chart(fig_map, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig_map, use_container_width=True, config={
+            "displayModeBar": True,
+            "scrollZoom": True,
+            "modeBarButtonsToRemove": ["toImage"],
+            "modeBarButtonsToAdd": ["zoomInMapbox", "zoomOutMapbox", "resetViewMapbox"],
+        })
 
         # Animated wind/weather timeline
         st.markdown('<div class="sec-head">ROUTE WEATHER TIMELINE</div>', unsafe_allow_html=True)
@@ -1036,86 +1118,125 @@ with tab1:
         fig_timeline.update_annotations(font=dict(color="#64748b", size=11))
         st.plotly_chart(fig_timeline, use_container_width=True, config={"displayModeBar": False})
 
-    # Weather alerts panel
+    # ── Weather side panel (reference-style) ───────────────────────────────────
     with wx_col:
-        # Origin + Dest live weather
-        for label, lat, lon, icao, color in [
-            ("ORIGIN", orig_lat, orig_lon, icao_orig, "#38bdf8"),
-            ("DEST",   dest_lat, dest_lon, icao_dest, "#a78bfa"),
-        ]:
-            w = get_weather(lat, lon)
-            cur = w.get("current",{}) if w else {}
-            desc, icon, _ = wx_info(cur.get("weather_code",0))
-            st.markdown(f"""
-            <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(56,189,248,0.12);
-                        border-top:3px solid {color};border-radius:10px;padding:14px;margin:8px 0">
-              <div style="font-family:'Orbitron',monospace;font-size:9px;color:{color};letter-spacing:3px;margin-bottom:8px">{label} · {icao}</div>
-              <div style="font-size:24px">{icon} <span style="font-size:13px;color:#e2e8f0">{desc}</span></div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;font-size:12px;color:#475569">
-                <div>🌡 <span style="color:#94a3b8">{cur.get('temperature_2m','—'):.1f}°C</span></div>
-                <div>💨 <span style="color:#94a3b8">{cur.get('wind_speed_10m','—'):.0f} km/h</span></div>
-                <div>🧭 <span style="color:#94a3b8">{wind_label(cur.get('wind_direction_10m',0))}</span></div>
-                <div>💧 <span style="color:#94a3b8">{cur.get('relative_humidity_2m','—'):.0f}%</span></div>
-                <div>🔵 <span style="color:#94a3b8">{cur.get('pressure_msl','—'):.0f} hPa</span></div>
-                <div>🌧 <span style="color:#94a3b8">{cur.get('precipitation','—'):.1f} mm</span></div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+        st.markdown('<div class="sec-head">WEATHER ALERTS</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="sec-head">ROUTE ALERTS</div>', unsafe_allow_html=True)
+        # Route alerts first (most important)
         alerts = []
         for i, w in enumerate(wp_weather):
             code = w.get("weather_code", 0)
             ws   = w.get("wind_speed", 0)
             lbl  = "ORIG" if i==0 else "DEST" if i==len(wp_weather)-1 else f"WP{i}"
-            if code >= 95: alerts.append(("danger",  f"🔴 {lbl}: Thunderstorm / Severe"))
-            elif code >= 80: alerts.append(("warning",f"🟡 {lbl}: Heavy showers"))
-            elif ws > 70:  alerts.append(("danger",  f"🔴 {lbl}: Extreme winds {ws:.0f} km/h"))
-            elif ws > 45:  alerts.append(("warning", f"🟡 {lbl}: Strong winds {ws:.0f} km/h"))
-            elif ws > 25:  alerts.append(("info",    f"🔵 {lbl}: Moderate wind {ws:.0f} km/h"))
-        if not alerts:
-            st.markdown('<div class="alert-ok">✅ All checkpoints clear — smooth flight expected</div>', unsafe_allow_html=True)
-        for lvl, msg in alerts[:8]:
-            st.markdown(f'<div class="alert-{lvl}">{msg}</div>', unsafe_allow_html=True)
+            if code >= 95:   alerts.append(("danger",  lbl, "Thunderstorm", f"{ws:.0f} km/h"))
+            elif code >= 80: alerts.append(("warning", lbl, "Heavy showers", f"{ws:.0f} km/h"))
+            elif ws > 70:    alerts.append(("danger",  lbl, "Extreme winds", f"{ws:.0f} km/h"))
+            elif ws > 45:    alerts.append(("warning", lbl, "Strong winds",  f"{ws:.0f} km/h"))
+            elif ws > 25:    alerts.append(("info",    lbl, "Moderate wind", f"{ws:.0f} km/h"))
+            else:            alerts.append(("ok",      lbl, "Clear",         f"{ws:.0f} km/h"))
 
-        # Hourly forecast sparkline for origin
-        st.markdown('<div class="sec-head">24H FORECAST · ORIGIN</div>', unsafe_allow_html=True)
+        if all(a[0]=="ok" for a in alerts):
+            st.markdown("""
+            <div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.4);
+                border-radius:8px;padding:12px;text-align:center;margin-bottom:8px">
+              <div style="font-size:18px">✅</div>
+              <div style="color:#86efac;font-weight:600;font-size:12px;margin-top:4px">Route looks clear</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sec-head">WAYPOINTS</div>', unsafe_allow_html=True)
+        for lvl, lbl, desc, wind in alerts[:10]:
+            colors = {"danger":"#ef4444","warning":"#f59e0b","info":"#38bdf8","ok":"#22c55e"}
+            badges = {"danger":"HIGH","warning":"MOD","info":"LOW","ok":"LOW"}
+            col = colors[lvl]
+            badge = badges[lvl]
+            badge_bg = {"danger":"rgba(239,68,68,0.15)","warning":"rgba(245,158,11,0.15)",
+                        "info":"rgba(56,189,248,0.15)","ok":"rgba(34,197,94,0.15)"}[lvl]
+            wx_icon = {"danger":"⛈","warning":"🌧","info":"💨","ok":"☀️"}[lvl]
+            st.markdown(f"""
+            <div style="background:rgba(10,22,40,0.8);border:1px solid rgba(56,189,248,0.1);
+                border-left:3px solid {col};border-radius:8px;padding:10px 12px;margin:5px 0;
+                display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <div style="font-family:'Orbitron',monospace;font-size:9px;color:#64748b;
+                    letter-spacing:2px;margin-bottom:3px">{lbl}</div>
+                <div style="font-size:12px;color:#94a3b8">{wx_icon} {wind}</div>
+              </div>
+              <div style="background:{badge_bg};border:1px solid {col};color:{col};
+                  font-size:9px;font-weight:700;padding:3px 7px;border-radius:4px;
+                  font-family:'Orbitron',monospace;letter-spacing:1px">{badge}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Origin weather card
+        st.markdown('<div class="sec-head">ORIGIN · LIVE</div>', unsafe_allow_html=True)
         w0 = get_weather(orig_lat, orig_lon)
-        if w0 and "hourly" in w0:
-            h = w0["hourly"]
-            hrs  = h.get("time",         [])[:24]
-            wspd = h.get("wind_speed_10m",[])[:24]
-            wcode= h.get("weather_code", [])[:24]
-            hour_labels = [t[-5:] for t in hrs]
+        cur0 = w0.get("current",{}) if w0 else {}
+        desc0, icon0, _ = wx_info(cur0.get("weather_code",0))
+        temp0  = cur0.get("temperature_2m", "--")
+        wind0  = cur0.get("wind_speed_10m", "--")
+        hum0   = cur0.get("relative_humidity_2m", "--")
+        pres0  = cur0.get("pressure_msl","--")
+        st.markdown(f"""
+        <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(56,189,248,0.15);
+            border-top:3px solid #38bdf8;border-radius:10px;padding:14px;margin-bottom:8px">
+          <div style="font-family:'Orbitron',monospace;font-size:9px;color:#38bdf8;
+              letter-spacing:3px;margin-bottom:8px">{icao_orig}</div>
+          <div style="font-size:26px;margin-bottom:8px">{icon0}
+            <span style="font-size:12px;color:#94a3b8;margin-left:4px">{desc0}</span></div>
+          <div style="font-size:22px;font-weight:700;color:#e2e8f0;font-family:'Orbitron',monospace;
+              margin-bottom:10px">{temp0:.1f if isinstance(temp0,float) else temp0}°C</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{wind0:.0f if isinstance(wind0,float) else wind0} km/h</span></div>
+            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{hum0:.0f if isinstance(hum0,float) else hum0}%</span></div>
+            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{pres0:.0f if isinstance(pres0,float) else pres0} hPa</span></div>
+            <div style="color:#475569">Dir<br><span style="color:#94a3b8;font-weight:600">{wind_label(cur0.get("wind_direction_10m",0))}</span></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-            fig_fc = go.Figure()
-            fig_fc.add_trace(go.Bar(
-                x=hour_labels, y=wspd,
-                marker_color=["#ef4444" if v>60 else "#f59e0b" if v>35 else "#38bdf8" for v in wspd],
-                opacity=0.7,
-            ))
-            fig_fc.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(5,15,30,0.5)",
-                margin=dict(l=0,r=0,t=10,b=0), height=140, showlegend=False,
-                xaxis=dict(showgrid=False, color="#1e3a5f", tickfont=dict(size=9)),
-                yaxis=dict(showgrid=True, gridcolor="rgba(30,58,95,0.5)", color="#1e3a5f"),
-            )
-            st.plotly_chart(fig_fc, use_container_width=True, config={"displayModeBar":False})
+        # Destination weather card
+        st.markdown('<div class="sec-head">DESTINATION · LIVE</div>', unsafe_allow_html=True)
+        wd = get_weather(dest_lat, dest_lon)
+        curd = wd.get("current",{}) if wd else {}
+        descd, icond, _ = wx_info(curd.get("weather_code",0))
+        tempd  = curd.get("temperature_2m", "--")
+        windd  = curd.get("wind_speed_10m", "--")
+        humd   = curd.get("relative_humidity_2m", "--")
+        presd  = curd.get("pressure_msl","--")
+        st.markdown(f"""
+        <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(167,139,250,0.15);
+            border-top:3px solid #a78bfa;border-radius:10px;padding:14px;margin-bottom:8px">
+          <div style="font-family:'Orbitron',monospace;font-size:9px;color:#a78bfa;
+              letter-spacing:3px;margin-bottom:8px">{icao_dest}</div>
+          <div style="font-size:26px;margin-bottom:8px">{icond}
+            <span style="font-size:12px;color:#94a3b8;margin-left:4px">{descd}</span></div>
+          <div style="font-size:22px;font-weight:700;color:#e2e8f0;font-family:'Orbitron',monospace;
+              margin-bottom:10px">{tempd:.1f if isinstance(tempd,float) else tempd}°C</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{windd:.0f if isinstance(windd,float) else windd} km/h</span></div>
+            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{humd:.0f if isinstance(humd,float) else humd}%</span></div>
+            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{presd:.0f if isinstance(presd,float) else presd} hPa</span></div>
+            <div style="color:#475569">Dir<br><span style="color:#94a3b8;font-weight:600">{wind_label(curd.get("wind_direction_10m",0))}</span></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # Legend
-        st.markdown('<div class="sec-head">LEGEND</div>', unsafe_allow_html=True)
+        # Colour legend
+        st.markdown('<div class="sec-head">MAP LEGEND</div>', unsafe_allow_html=True)
         for color, label in [
-            ("#38bdf8","Active route"),
-            ("#a78bfa","Route B — Polar"),
-            ("#34d399","Route C — Safe"),
-            ("#fbbf24","Jet stream / Route D"),
-            ("#ef4444","Storm / cyclone zone"),
-            ("#f59e0b","SIGMET alert"),
+            ("#38bdf8","Best / Direct route"),
+            ("#a78bfa","Alt route B"),
+            ("#34d399","Alt route C"),
+            ("#fbbf24","Alt route D / Jet stream"),
+            ("#ef4444","Storm zone"),
+            ("#f59e0b","SIGMET"),
         ]:
             st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#475569;margin:5px 0">
-              <div style="width:12px;height:12px;border-radius:3px;background:{color};flex-shrink:0"></div>
-              {label}
+            <div style="display:flex;align-items:center;gap:8px;font-size:11px;
+                color:#475569;margin:4px 0">
+              <div style="width:10px;height:10px;border-radius:2px;
+                  background:{color};flex-shrink:0"></div>{label}
             </div>
             """, unsafe_allow_html=True)
 
@@ -1374,13 +1495,13 @@ with tab3:
         ))
 
         fig_rmap.update_layout(
-            mapbox=dict(style="carto-darkmatter", center=dict(lat=center_lat, lon=center_lon), zoom=2.3),
+            mapbox=dict(style="carto-darkmatter", center=dict(lat=center_lat, lon=center_lon), zoom=auto_zoom),
             paper_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0,r=0,t=0,b=0), height=440,
+            margin=dict(l=0,r=0,t=0,b=0), height=480,
             legend=dict(bgcolor="rgba(5,15,30,0.9)", bordercolor="rgba(56,189,248,0.2)",
                         borderwidth=1, font=dict(color="#64748b",size=11), x=0.01, y=0.99),
         )
-        st.plotly_chart(fig_rmap, use_container_width=True, config={"displayModeBar":False})
+        st.plotly_chart(fig_rmap, use_container_width=True, config={"displayModeBar": True, "scrollZoom": True, "modeBarButtonsToRemove": ["toImage","resetViewMapbox"]})
 
         # Radar comparison chart
         st.markdown('<div class="sec-head">ROUTE SCORE COMPARISON</div>', unsafe_allow_html=True)
