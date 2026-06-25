@@ -843,12 +843,35 @@ with tab1:
                     fill="toself",
                     fillcolor=col.replace("#","rgba(").rstrip(")") if False else "rgba(239,68,68,0.06)",
                 ))
+                # Storm-cell icon badge: red glow + ring + dark disc + spiral glyph
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=[lat], lon=[lon],
+                    mode="markers",
+                    marker=dict(size=34, color=col, opacity=0.30),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=[lat], lon=[lon],
+                    mode="markers",
+                    marker=dict(size=26, color=col, opacity=0.9),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+                fig_map.add_trace(go.Scattermapbox(
+                    lat=[lat], lon=[lon],
+                    mode="markers",
+                    marker=dict(size=21, color="rgba(6,14,28,0.95)", opacity=1.0),
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
                 fig_map.add_trace(go.Scattermapbox(
                     lat=[lat], lon=[lon],
                     mode="markers+text",
-                    marker=dict(size=20, color="rgba(0,0,0,0)"),
-                    text=["🌀 " + name],
-                    textposition="top right",
+                    marker=dict(size=0, color="rgba(0,0,0,0)"),
+                    text=["🌀"],
+                    textfont=dict(size=20),
+                    hovertext=[name],
                     hovertemplate=f"⚠️ {name}<extra></extra>",
                     showlegend=False,
                 ))
@@ -928,28 +951,37 @@ with tab1:
             for i, w in enumerate(wp_weather)
         ]
 
-        # Outer ring (dark border effect)
+        # Severity-coloured halo ring (soft glow behind the icon badge)
         fig_map.add_trace(go.Scattermapbox(
             lat=wp_lats, lon=wp_lons,
             mode="markers",
-            marker=dict(size=30, color="rgba(5,15,30,0.85)", opacity=1.0),
+            marker=dict(size=34, color=wp_colors, opacity=0.30),
             hoverinfo="skip",
             showlegend=False,
         ))
-        # Coloured dot
+        # Thin coloured ring (the visible border of the badge)
         fig_map.add_trace(go.Scattermapbox(
             lat=wp_lats, lon=wp_lons,
             mode="markers",
-            marker=dict(size=22, color=wp_colors, opacity=1.0),
+            marker=dict(size=26, color=wp_colors, opacity=0.85),
             hoverinfo="skip",
             showlegend=False,
         ))
-        # Weather icon text on top
+        # Dark disc backdrop so the icon glyph reads clearly (this is now just the "card", not the indicator)
+        fig_map.add_trace(go.Scattermapbox(
+            lat=wp_lats, lon=wp_lons,
+            mode="markers",
+            marker=dict(size=21, color="rgba(6,14,28,0.95)", opacity=1.0),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        # Weather icon glyph on top — this is now the dominant, clearly-visible element
         fig_map.add_trace(go.Scattermapbox(
             lat=wp_lats, lon=wp_lons,
             mode="markers+text",
             marker=dict(size=0, color="rgba(0,0,0,0)"),
             text=wp_texts,
+            textfont=dict(size=20),
             hovertext=wp_hover,
             hovertemplate="%{hovertext}<extra></extra>",
             name="Waypoints",
@@ -1177,6 +1209,10 @@ with tab1:
         wind0  = cur0.get("wind_speed_10m", "--")
         hum0   = cur0.get("relative_humidity_2m", "--")
         pres0  = cur0.get("pressure_msl","--")
+        temp0_s = f"{temp0:.1f}" if isinstance(temp0, (int, float)) else str(temp0)
+        wind0_s = f"{wind0:.0f}" if isinstance(wind0, (int, float)) else str(wind0)
+        hum0_s  = f"{hum0:.0f}"  if isinstance(hum0,  (int, float)) else str(hum0)
+        pres0_s = f"{pres0:.0f}" if isinstance(pres0, (int, float)) else str(pres0)
         st.markdown(f"""
         <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(56,189,248,0.15);
             border-top:3px solid #38bdf8;border-radius:10px;padding:14px;margin-bottom:8px">
@@ -1185,11 +1221,11 @@ with tab1:
           <div style="font-size:26px;margin-bottom:8px">{icon0}
             <span style="font-size:12px;color:#94a3b8;margin-left:4px">{desc0}</span></div>
           <div style="font-size:22px;font-weight:700;color:#e2e8f0;font-family:'Orbitron',monospace;
-              margin-bottom:10px">{temp0:.1f if isinstance(temp0,float) else temp0}°C</div>
+              margin-bottom:10px">{temp0_s}°C</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{wind0:.0f if isinstance(wind0,float) else wind0} km/h</span></div>
-            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{hum0:.0f if isinstance(hum0,float) else hum0}%</span></div>
-            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{pres0:.0f if isinstance(pres0,float) else pres0} hPa</span></div>
+            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{wind0_s} km/h</span></div>
+            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{hum0_s}%</span></div>
+            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{pres0_s} hPa</span></div>
             <div style="color:#475569">Dir<br><span style="color:#94a3b8;font-weight:600">{wind_label(cur0.get("wind_direction_10m",0))}</span></div>
           </div>
         </div>
@@ -1204,6 +1240,10 @@ with tab1:
         windd  = curd.get("wind_speed_10m", "--")
         humd   = curd.get("relative_humidity_2m", "--")
         presd  = curd.get("pressure_msl","--")
+        tempd_s = f"{tempd:.1f}" if isinstance(tempd, (int, float)) else str(tempd)
+        windd_s = f"{windd:.0f}" if isinstance(windd, (int, float)) else str(windd)
+        humd_s  = f"{humd:.0f}"  if isinstance(humd,  (int, float)) else str(humd)
+        presd_s = f"{presd:.0f}" if isinstance(presd, (int, float)) else str(presd)
         st.markdown(f"""
         <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(167,139,250,0.15);
             border-top:3px solid #a78bfa;border-radius:10px;padding:14px;margin-bottom:8px">
@@ -1212,11 +1252,11 @@ with tab1:
           <div style="font-size:26px;margin-bottom:8px">{icond}
             <span style="font-size:12px;color:#94a3b8;margin-left:4px">{descd}</span></div>
           <div style="font-size:22px;font-weight:700;color:#e2e8f0;font-family:'Orbitron',monospace;
-              margin-bottom:10px">{tempd:.1f if isinstance(tempd,float) else tempd}°C</div>
+              margin-bottom:10px">{tempd_s}°C</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{windd:.0f if isinstance(windd,float) else windd} km/h</span></div>
-            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{humd:.0f if isinstance(humd,float) else humd}%</span></div>
-            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{presd:.0f if isinstance(presd,float) else presd} hPa</span></div>
+            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{windd_s} km/h</span></div>
+            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{humd_s}%</span></div>
+            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{presd_s} hPa</span></div>
             <div style="color:#475569">Dir<br><span style="color:#94a3b8;font-weight:600">{wind_label(curd.get("wind_direction_10m",0))}</span></div>
           </div>
         </div>
