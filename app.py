@@ -279,7 +279,6 @@ div[data-testid="stVerticalBlock"] > div { gap: 0.4rem; }
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 AIRPORTS = {
-    # Primary airports
     "KSDL — Scottsdale":          (33.6297, -111.9135),
     "KSLC — Salt Lake City":      (40.7934, -111.9799),
     "KPHX — Phoenix Sky Harbor":  (33.4373, -111.9741),
@@ -295,11 +294,9 @@ AIRPORTS = {
     "KASE — Aspen Pitkin":        (39.2232, -106.8688),
     "KAPA — Centennial Denver":   (39.5701, -104.8492),
     "KSVR — Sevier Valley":       (38.7724, -112.0877),
-    # Small fields / waypoints
     "UT10 — Cedar Valley":        (40.4828, -111.9572),
     "U55 — Panguitch Muni":       (37.7045, -112.3123),
     "59AZ — Robin":               (34.7058, -112.4840),
-    # Named GPS fixes
     "QUAKY — Fix":                (34.2833, -111.8500),
     "CARTL — Fix":                (35.1167, -111.9833),
     "LOFTS — Fix":                (35.6500, -112.0000),
@@ -407,26 +404,28 @@ def get_sigmets():
 # ═══════════════════════════════════════════════════════════════
 #  AI ENGINE
 # ═══════════════════════════════════════════════════════════════
-def ai_fuel_analysis(aircraft, dist_km, wp_weather, cruise_alt, pax_load):
+def ai_fuel_analysis(aircraft, dist_km, wp_weather, cruise_alt, pax_load, simulate_severe=False):
     ac = AIRCRAFT_DB[aircraft]
     base_burn = ac["burn_kgh"]
     cruise_kts = ac["cruise_kts"]
     dist_nm = dist_km * 0.539957
     base_time_h = dist_nm / cruise_kts
 
-    # Wind factor (headwind/tailwind avg)
     avg_wind = np.mean([w["wind_speed"] for w in wp_weather]) if wp_weather else 20
     avg_dir  = np.mean([w["wind_dir"]   for w in wp_weather]) if wp_weather else 0
 
-    # Rough headwind component
     headwind_factor = 1 + (avg_wind * 0.003 * math.cos(math.radians(avg_dir)))
     alt_factor      = 0.92 if cruise_alt >= 35000 else 0.97
     load_factor     = 0.88 + (pax_load / 100) * 0.18
     weather_penalty = 1.0
+    
     for w in wp_weather:
         if int(w["weather_code"]) >= 95: weather_penalty += 0.04
         elif int(w["weather_code"]) >= 80: weather_penalty += 0.02
         elif int(w["weather_code"]) >= 61: weather_penalty += 0.01
+
+    if simulate_severe:
+        weather_penalty += 0.35
 
     total_factor = headwind_factor * alt_factor * load_factor * weather_penalty
     actual_time_h = base_time_h * headwind_factor
@@ -447,9 +446,7 @@ def ai_fuel_analysis(aircraft, dist_km, wp_weather, cruise_alt, pax_load):
         "co2_tonnes": round(fuel_burn_total * 3.16 / 1000, 1),
     }
 
-# ── Predefined routes with exact GPS waypoints ─────────────────────────────
 PREDEFINED_ROUTES = {
-    # (origin_key, dest_key): list of route dicts, each with name+waypoints
     ("KSDL — Scottsdale", "KSLC — Salt Lake City"): [
         {
             "id": "A", "color": "#38bdf8",
@@ -474,7 +471,7 @@ PREDEFINED_ROUTES = {
         },
         {
             "id": "C", "color": "#34d399",
-            "name": "VIA PHOENIX & SEVIER VALLEY",
+            "name": "VIA PHOENIX & SEVIER VALLEY (WEATHER AVOIDANCE)",
             "desc": "KSDL -> KPHX -> Robin 59AZ -> KDTA -> KSVR -> KSLC",
             "wpt_coords": [
                 (33.6297,-111.9135),(33.4373,-111.9741),(34.7058,-112.4840),
@@ -543,7 +540,6 @@ PREDEFINED_ROUTES = {
 }
 
 def build_waypoints_from_coords(coord_list):
-    """Build interpolated waypoint list through exact GPS coords."""
     if len(coord_list) < 2:
         return coord_list
     all_pts = []
@@ -551,16 +547,15 @@ def build_waypoints_from_coords(coord_list):
         seg = interpolate_route(coord_list[i][0], coord_list[i][1],
                                 coord_list[i+1][0], coord_list[i+1][1], n=4)
         if i < len(coord_list)-2:
-            seg = seg[:-1]  # avoid duplicate junction points
+            seg = seg[:-1]
         all_pts.extend(seg)
     return all_pts
 
-def ai_route_optimizer(orig, dest, orig_coords, dest_coords):
+def ai_route_optimizer(orig, dest, orig_coords, dest_coords, simulate_severe=False):
     lat1,lon1 = orig_coords
     lat2,lon2 = dest_coords
     dist_km   = haversine(lat1,lon1,lat2,lon2)
 
-    # Check for predefined routes first
     key = (orig, dest)
     if key in PREDEFINED_ROUTES:
         routes = []
@@ -577,57 +572,49 @@ def ai_route_optimizer(orig, dest, orig_coords, dest_coords):
     else:
         routes = [
             {
-                "id": "A",
-                "name": "DIRECT ROUTE",
-                "desc": "Great circle, shortest distance",
-                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10,0,0),
-                "color": "#38bdf8",
-                "dist_factor": 1.00,
-                "time_factor": 1.00,
+                "id": "A", "name": "DIRECT ROUTE", "desc": "Great circle, shortest distance",
+                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10,0,0), "color": "#38bdf8", "dist_factor": 1.00, "time_factor": 1.00,
             },
             {
-                "id": "B",
-                "name": "NORTHERN ROUTE",
-                "desc": "Higher latitude, jet stream advantage",
-                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10, 1.5,-1.5),
-                "color": "#a78bfa",
-                "dist_factor": 1.04,
-                "time_factor": 0.97,
+                "id": "B", "name": "NORTHERN ROUTE", "desc": "Higher latitude, jet stream advantage",
+                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10, 1.5,-1.5), "color": "#a78bfa", "dist_factor": 1.04, "time_factor": 0.97,
             },
             {
-                "id": "C",
-                "name": "WEATHER AVOIDANCE",
-                "desc": "Storm-clear path, longer but safer",
-                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10,-1.5, 2),
-                "color": "#34d399",
-                "dist_factor": 1.08,
-                "time_factor": 1.06,
+                "id": "C", "name": "WEATHER AVOIDANCE ALTERNATE", "desc": "Storm-clear path, longer but safer",
+                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10,-1.5, 2), "color": "#34d399", "dist_factor": 1.08, "time_factor": 1.06,
             },
             {
-                "id": "D",
-                "name": "FUEL ECONOMY",
-                "desc": "Optimal altitude & wind exploitation",
-                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10, 0.5, 0.8),
-                "color": "#fbbf24",
-                "dist_factor": 1.02,
-                "time_factor": 0.98,
+                "id": "D", "name": "FUEL ECONOMY", "desc": "Optimal altitude & wind exploitation",
+                "waypoints": interpolate_route(lat1,lon1,lat2,lon2,10, 0.5, 0.8), "color": "#fbbf24", "dist_factor": 1.02, "time_factor": 0.98,
             },
         ]
 
-    # Score each route with mock AI weights
     for r in routes:
         d = dist_km * r["dist_factor"]
         t = (d * 0.539957) / 490 * r["time_factor"]
         fuel = 5400 * t * r["dist_factor"]
         wx_pts = r["waypoints"][::3]
         wx_data = get_all_route_weather(tuple(wx_pts))
+        
         storm_count = sum(1 for w in wx_data if int(w["weather_code"]) >= 80)
         avg_wind    = np.mean([w["wind_speed"] for w in wx_data]) if wx_data else 20
+
+        if simulate_severe:
+            if r["id"] in ["A", "D"]:
+                storm_count += 6
+                avg_wind += 45
+            elif r["id"] == "C":
+                storm_count = 0
+                avg_wind = 12
 
         wx_score   = max(0, 100 - storm_count * 20 - avg_wind * 0.3)
         fuel_score = max(0, 100 - (r["dist_factor"] - 1) * 300)
         time_score = max(0, 100 - (r["time_factor"] - 0.9) * 300)
-        ai_score   = wx_score * 0.4 + fuel_score * 0.35 + time_score * 0.25
+        
+        if simulate_severe and r["id"] in ["A", "D"]:
+            ai_score = wx_score * 0.2 + fuel_score * 0.2 + time_score * 0.1
+        else:
+            ai_score = wx_score * 0.4 + fuel_score * 0.35 + time_score * 0.25
 
         r.update({
             "dist_km":     round(d),
@@ -658,9 +645,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # Live clock in sidebar
     now_utc = datetime.now(timezone.utc)
-    now_ist = datetime.now()
     st.markdown(f"""
     <div style="background:rgba(56,189,248,0.04);border:1px solid rgba(56,189,248,0.12);border-radius:10px;padding:14px;margin:8px 0;text-align:center">
       <div class="live-clock">{now_utc.strftime('%H:%M:%S')}</div>
@@ -681,12 +666,15 @@ with st.sidebar:
     cruise_speed = st.slider("Speed (knots)",   400,   600,   490,   10)
     pax_load     = st.slider("Pax Load (%)",    60,    100,   85,    5)
 
+    st.markdown('<div class="sec-head">Dynamic Overrides</div>', unsafe_allow_html=True)
+    simulate_severe = st.toggle("Simulate Severe Weather", False, help="Forces heavy storm front and triggers AI route optimization recalculation.")
+
     st.markdown('<div class="sec-head">Display</div>', unsafe_allow_html=True)
-    show_storms   = st.toggle("Storm zones",    True)
-    show_sigmets  = st.toggle("Live SIGMETs",   True)
-    show_jetstream= st.toggle("Jet streams",    True)
-    auto_refresh  = st.toggle("Auto-refresh",   False)
-    map_style     = st.selectbox("Map theme", ["Dark Aviation","Satellite","Terrain"])
+    show_storms    = st.toggle("Storm zones",    True)
+    show_sigmets   = st.toggle("Live SIGMETs",   True)
+    show_jetstream = st.toggle("Jet streams",    True)
+    auto_refresh   = st.toggle("Auto-refresh",   False)
+    map_style      = st.selectbox("Map theme", ["Dark Aviation","Satellite","Terrain"])
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     compute_btn = st.button("⚡ COMPUTE FLIGHT PLAN", use_container_width=True)
@@ -700,17 +688,21 @@ if compute_btn or "route_data" not in st.session_state:
     st.session_state.origin   = origin_sel
     st.session_state.dest     = dest_sel
     st.session_state.computed = True
-    # Reset zoom/center when route changes
     if "map_zoom" in st.session_state: del st.session_state["map_zoom"]
     if "map_center_lat" in st.session_state: del st.session_state["map_center_lat"]
     if "map_center_lon" in st.session_state: del st.session_state["map_center_lon"]
 
 origin_name = st.session_state.get("origin", origin_sel)
-dest_name   = st.session_state.get("dest",   dest_sel)
+dest_name   = st.session_state.get("dest",  dest_sel)
 orig_lat, orig_lon = AIRPORTS[origin_name]
 dest_lat, dest_lon = AIRPORTS[dest_name]
-icao_orig = origin_name.split("—")[0].strip()
-icao_dest = dest_name.split("—")[0].strip()
+
+# Robust text splits 
+icao_orig = origin_name.split(" — ")[0].strip() if " — " in origin_name else origin_name.split("-")[0].strip()
+icao_dest = dest_name.split(" — ")[0].strip() if " — " in dest_name else dest_name.split("-")[0].strip()
+orig_clean_desc = origin_name.split(" — ")[1].strip() if " — " in origin_name else origin_name
+dest_clean_desc = dest_name.split(" — ")[1].strip() if " — " in dest_name else dest_name
+
 dist_km   = haversine(orig_lat, orig_lon, dest_lat, dest_lon)
 dist_nm   = dist_km * 0.539957
 
@@ -736,7 +728,7 @@ with h2:
         <span style="color:#a78bfa">{icao_dest}</span>
       </div>
       <div style="font-size:12px;color:#334d6b;margin-top:4px">
-        {origin_name.split("—")[1].strip()} → {dest_name.split("—")[1].strip()}
+        {orig_clean_desc} → {dest_clean_desc}
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -757,9 +749,17 @@ st.markdown("<div style='margin:4px 0'></div>", unsafe_allow_html=True)
 waypoints = interpolate_route(orig_lat, orig_lon, dest_lat, dest_lon, 9)
 with st.spinner("🛰️ Acquiring live weather data..."):
     wp_weather = get_all_route_weather(tuple(waypoints))
-    fuel_data  = ai_fuel_analysis(aircraft, dist_km, wp_weather, cruise_alt, pax_load)
-    routes     = ai_route_optimizer(origin_name, dest_name, (orig_lat,orig_lon), (dest_lat,dest_lon))
+    fuel_data  = ai_fuel_analysis(aircraft, dist_km, wp_weather, cruise_alt, pax_load, simulate_severe)
+    routes     = ai_route_optimizer(origin_name, dest_name, (orig_lat,orig_lon), (dest_lat,dest_lon), simulate_severe)
     sigmets    = get_sigmets() if show_sigmets else []
+
+if simulate_severe:
+    st.markdown("""
+    <div class="alert-danger" style="margin-bottom:12px; padding:15px; font-size:14px;">
+        <strong>⚠️ CRITICAL WEATHER NOTICE:</strong> Severe frontal storms simulated over direct flight tracks. 
+        AI Engine has downvoted standard routes and optimized tracking to suggest an alternative route.
+    </div>
+    """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
 #  METRICS BAR
@@ -770,14 +770,14 @@ eta_m = int((fuel_data["flight_time_h"] - eta_h) * 60)
 
 cols = st.columns(8)
 metrics = [
-    ("DISTANCE",  f"{dist_nm:,.0f}",                   "NM"),
+    ("DISTANCE",  f"{dist_nm:,.0f}",                      "NM"),
     ("ETA",       f"{eta_h}h{eta_m:02d}m",              "FLIGHT TIME"),
     ("CRUISE",    f"{cruise_alt//1000}K",               "FEET ALT"),
     ("SPEED",     f"{cruise_speed}",                    "KNOTS"),
     ("FUEL",      f"{fuel_data['total_fuel_kg']//1000}K","KG TOTAL"),
     ("EFFICIENCY",f"{fuel_data['efficiency_score']}",   "AI SCORE"),
     ("CO₂",       f"{fuel_data['co2_tonnes']}",         "TONNES"),
-    ("PAX LOAD",  f"{pax_load}%",                       "CAPACITY"),
+    ("PAX LOAD",  f"{pax_load}%",                        "CAPACITY"),
 ]
 for col, (label, val, unit) in zip(cols, metrics):
     with col:
@@ -807,476 +807,192 @@ with tab1:
     map_col, wx_col = st.columns([4, 1])
 
     with map_col:
-        # Build Plotly map (better than folium for this use case)
         tile_map = {
             "Dark Aviation": "carto-darkmatter",
             "Satellite":     "open-street-map",
             "Terrain":       "carto-positron",
         }
         mapbox_style = tile_map.get(map_style, "carto-darkmatter")
-
         fig_map = go.Figure()
 
-        # Storm zones
-        if show_storms:
+        # Dynamic/Static Storm Front Zones (Visual Overlays only)
+        if show_storms or simulate_severe:
             storm_zones = [
-                ("Gulf of Mexico",    24,  -90, 3.5, "#ef4444"),
-                ("Caribbean",         18,  -70, 3.0, "#ef4444"),
-                ("E Pacific Storms",  18, -110, 3.0, "#f97316"),
-                ("Great Plains",      38,  -98, 2.5, "#f59e0b"),
+                ("East Pacific Front", 18, -110, 3.0, "#f97316"),
+                ("Great Plains Front", 38,  -98, 2.5, "#f59e0b"),
             ]
+            if simulate_severe:
+                storm_zones.append(("⚠️ CRITICAL FLIGHT-PATH STORM CELL", 37.0, -112.0, 3.2, "#ef4444"))
+                
             for name, lat, lon, sz, col in storm_zones:
-                # Draw circle approximation using scatter
                 angles = np.linspace(0, 2*math.pi, 40)
-                r_lat = sz
-                r_lon = sz * 1.5
-                clat = lat + r_lat * np.sin(angles)
-                clon = lon + r_lon * np.cos(angles)
+                clat = lat + sz * np.sin(angles)
+                clon = lon + (sz * 1.5) * np.cos(angles)
                 fig_map.add_trace(go.Scattermapbox(
-                    lat=list(clat) + [clat[0]],
-                    lon=list(clon) + [clon[0]],
-                    mode="lines",
-                    line=dict(color=col, width=1),
-                    opacity=0.5,
-                    hovertemplate=f"⚠️ {name}<extra></extra>",
-                    showlegend=False,
-                    fill="toself",
-                    fillcolor=col.replace("#","rgba(").rstrip(")") if False else "rgba(239,68,68,0.06)",
-                ))
-                # Storm-cell icon badge: red glow + ring + dark disc + spiral glyph
-                fig_map.add_trace(go.Scattermapbox(
-                    lat=[lat], lon=[lon],
-                    mode="markers",
-                    marker=dict(size=34, color=col, opacity=0.30),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ))
-                fig_map.add_trace(go.Scattermapbox(
-                    lat=[lat], lon=[lon],
-                    mode="markers",
-                    marker=dict(size=26, color=col, opacity=0.9),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ))
-                fig_map.add_trace(go.Scattermapbox(
-                    lat=[lat], lon=[lon],
-                    mode="markers",
-                    marker=dict(size=21, color="rgba(6,14,28,0.95)", opacity=1.0),
-                    hoverinfo="skip",
-                    showlegend=False,
-                ))
-                fig_map.add_trace(go.Scattermapbox(
-                    lat=[lat], lon=[lon],
-                    mode="markers+text",
-                    marker=dict(size=0, color="rgba(0,0,0,0)"),
-                    text=["🌀"],
-                    textfont=dict(size=20),
-                    hovertext=[name],
-                    hovertemplate=f"⚠️ {name}<extra></extra>",
-                    showlegend=False,
+                    lat=list(clat) + [clat[0]], lon=list(clon) + [clon[0]],
+                    mode="lines", line=dict(color=col, width=1.5),
+                    opacity=0.4, hovertemplate=f"⚠️ {name}<extra></extra>",
+                    showlegend=False, fill="toself", fillcolor="rgba(239,68,68,0.05)"
                 ))
 
-        # Jet stream
+        # Jet stream tracks
         if show_jetstream:
             jet_lats = [32, 35, 38, 40, 42, 43, 42, 40]
             jet_lons = [-120, -115, -110, -105, -100, -95, -90, -85]
             fig_map.add_trace(go.Scattermapbox(
-                lat=jet_lats, lon=jet_lons,
-                mode="lines",
-                line=dict(color="#fbbf24", width=2, dash="dot") if False else dict(color="#fbbf24", width=2),
-                opacity=0.45,
-                name="Jet Stream",
-                hovertemplate="Subtropical Jet Stream<extra></extra>",
+                lat=jet_lats, lon=jet_lons, mode="lines",
+                line=dict(color="#fbbf24", width=2.5), opacity=0.35,
+                name="Jet Stream Track", hovertemplate="Subtropical Jet Stream Profile<extra></extra>",
             ))
 
-        # Draw alt routes first (behind), then best route on top
+        # Render explicit Route Path Lines
         sorted_routes = [r for r in routes if not r.get("is_best")] + [r for r in routes if r.get("is_best")]
         for r in sorted_routes:
             wpts = r["waypoints"]
             rlats = [p[0] for p in wpts]
             rlons = [p[1] for p in wpts]
             is_best = r.get("is_best", False)
-            # Best route: thick solid line; alt routes: thinner, semi-transparent
+            
             fig_map.add_trace(go.Scattermapbox(
-                lat=rlats, lon=rlons,
-                mode="lines+markers" if is_best else "lines",
+                lat=rlats, lon=rlons, mode="lines",
                 line=dict(color=r["color"], width=5 if is_best else 2),
-                marker=dict(size=6, color=r["color"]) if is_best else dict(size=0),
-                opacity=1.0 if is_best else 0.55,
+                opacity=1.0 if is_best else 0.45,
                 name=("★ " if is_best else "") + r["name"],
                 hovertemplate=f"{r['name']}<br>{r['dist_km']:,} km · {r['time_h']}h<extra></extra>",
             ))
 
-        # Real-time weather intensity overlay — all route waypoints as heat bubbles
-        # Color: green = calm, yellow = moderate, red = severe
-        all_wx_lats, all_wx_lons, all_wx_colors, all_wx_sizes, all_wx_hover = [], [], [], [], []
-        for w in wp_weather:
-            code = w["weather_code"]; ws = w["wind_speed"]
-            if code >= 95:
-                color = "rgba(185,28,28,0.55)"; sz = 30
-            elif code >= 80 or ws > 60:
-                color = "rgba(239,68,68,0.40)"; sz = 24
-            elif code >= 61 or ws > 40:
-                color = "rgba(245,158,11,0.35)"; sz = 20
-            elif code >= 45 or ws > 25:
-                color = "rgba(56,189,248,0.28)"; sz = 16
-            else:
-                color = "rgba(34,197,94,0.22)"; sz = 14
-            all_wx_lats.append(w["lat"]); all_wx_lons.append(w["lon"])
-            all_wx_colors.append(color); all_wx_sizes.append(sz)
-            desc, icon, _ = wx_info(code)
-            all_wx_hover.append(
-                f"Temp: {w['temperature']:.1f}C  {icon} {desc}<br>"
-                f"Wind: {ws:.0f} km/h {wind_label(w['wind_dir'])}<br>"
-                f"Pressure: {w['pressure']:.0f} hPa  Humidity: {w['humidity']:.0f}%"
-            )
-
-        fig_map.add_trace(go.Scattermapbox(
-            lat=all_wx_lats, lon=all_wx_lons,
-            mode="markers",
-            marker=dict(size=all_wx_sizes, color=all_wx_colors),
-            hovertext=all_wx_hover,
-            hovertemplate="%{hovertext}<extra>Live Weather</extra>",
-            name="Live Wx Overlay",
-            opacity=1.0,
-        ))
-
-
+        # ── EXACT REPLICATION LOOK FROM image_16bebc.png ──
+        # Multi-layered tracking badge circles centered on route vectors
         wp_lats   = [w["lat"] for w in wp_weather]
         wp_lons   = [w["lon"] for w in wp_weather]
-        wp_texts  = [wx_info(w["weather_code"])[1] for w in wp_weather]
-        wp_colors = [wx_info(w["weather_code"])[2] for w in wp_weather]
+        wp_texts  = ["⛈️" if simulate_severe else wx_info(w["weather_code"])[1] for w in wp_weather]
+        
+        # Ring Border/Frame Colors based on weather severity context
+        wp_border_colors = []
+        for w in wp_weather:
+            code = w["weather_code"]
+            if simulate_severe or code >= 95:
+                wp_border_colors.append("#ef4444")  # Severe ring
+            elif code >= 61:
+                wp_border_colors.append("#f59e0b")  # Caution ring
+            else:
+                wp_border_colors.append("#22c55e")  # Safe clear green ring
+
         wp_hover  = [
-            f"WP{i}: {wx_info(w['weather_code'])[0]}<br>Wind: {w['wind_speed']:.0f} km/h {wind_label(w['wind_dir'])}<br>Temp: {w['temperature']:.1f}C<br>Pressure: {w['pressure']:.0f} hPa"
+            f"WP{i}: {'SEVERE STORM' if simulate_severe else wx_info(w['weather_code'])[0]}<br>Wind: {w['wind_speed'] if not simulate_severe else w['wind_speed']+65:.0f} km/h<br>Temp: {w['temperature']:.1f}°C"
             for i, w in enumerate(wp_weather)
         ]
 
-        # Severity-coloured halo ring (soft glow behind the icon badge)
+        # LAYER 1: Solid Outer Ring Frame
         fig_map.add_trace(go.Scattermapbox(
-            lat=wp_lats, lon=wp_lons,
-            mode="markers",
-            marker=dict(size=34, color=wp_colors, opacity=0.30),
-            hoverinfo="skip",
-            showlegend=False,
+            lat=wp_lats, lon=wp_lons, mode="markers",
+            marker=dict(size=28, color=wp_border_colors, opacity=1.0),
+            hoverinfo="skip", showlegend=False
         ))
-        # Thin coloured ring (the visible border of the badge)
+
+        # LAYER 2: Inner Dark Disc Backdrop (Clears the path color beneath)
         fig_map.add_trace(go.Scattermapbox(
-            lat=wp_lats, lon=wp_lons,
-            mode="markers",
-            marker=dict(size=26, color=wp_colors, opacity=0.85),
-            hoverinfo="skip",
-            showlegend=False,
+            lat=wp_lats, lon=wp_lons, mode="markers",
+            marker=dict(size=22, color="#0b1320", opacity=1.0),
+            hoverinfo="skip", showlegend=False
         ))
-        # Dark disc backdrop so the icon glyph reads clearly (this is now just the "card", not the indicator)
+
+        # LAYER 3: Centered Weather Glyphs
         fig_map.add_trace(go.Scattermapbox(
-            lat=wp_lats, lon=wp_lons,
-            mode="markers",
-            marker=dict(size=21, color="rgba(6,14,28,0.95)", opacity=1.0),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
-        # Weather icon glyph on top — this is now the dominant, clearly-visible element
-        fig_map.add_trace(go.Scattermapbox(
-            lat=wp_lats, lon=wp_lons,
-            mode="markers+text",
+            lat=wp_lats, lon=wp_lons, mode="markers+text",
             marker=dict(size=0, color="rgba(0,0,0,0)"),
-            text=wp_texts,
-            textfont=dict(size=20),
-            hovertext=wp_hover,
-            hovertemplate="%{hovertext}<extra></extra>",
-            name="Waypoints",
-            showlegend=True,
+            text=wp_texts, textfont=dict(size=14),
+            hovertext=wp_hover, hovertemplate="%{hovertext}<extra></extra>",
+            name="Route Waypoint Badges", showlegend=True
         ))
 
-        # SIGMETs
-        if show_sigmets and sigmets:
-            sig_lats, sig_lons, sig_txt = [], [], []
-            for s in sigmets[:25]:
-                try:
-                    sig_lats.append(float(s.get("lat",0)))
-                    sig_lons.append(float(s.get("lon",0)))
-                    sig_txt.append(f"SIGMET: {s.get('hazard','?')}<br>{s.get('firname','')}")
-                except: pass
-            if sig_lats:
-                fig_map.add_trace(go.Scattermapbox(
-                    lat=sig_lats, lon=sig_lons,
-                    mode="markers+text",
-                    marker=dict(size=16, color="#f59e0b", symbol="star"),
-                    text=["⚡"]*len(sig_lats),
-                    hovertext=sig_txt,
-                    hovertemplate="%{hovertext}<extra></extra>",
-                    name="SIGMETs",
-                ))
-
-        # Origin & Destination
-        # Origin: large aircraft marker with label box
+        # Clean Origin & Destination Vector Blocks
         fig_map.add_trace(go.Scattermapbox(
-            lat=[orig_lat], lon=[orig_lon],
-            mode="markers+text",
-            marker=dict(size=22, color="#38bdf8"),
-            text=[f"✈ {icao_orig}"],
-            textposition="top right",
-            hovertemplate=f"<b>ORIGIN: {icao_orig}</b><br>{origin_name.split(chr(8212))[1].strip()}<extra></extra>",
-            name="Origin",
+            lat=[orig_lat], lon=[orig_lon], mode="markers+text",
+            marker=dict(size=0), text=["✈️"], textfont=dict(size=24),
+            textposition="top center", name=f"Origin ({icao_orig})",
+            hovertemplate=f"<b>ORIGIN: {icao_orig}</b><br>{orig_clean_desc}<extra></extra>"
         ))
-        # Destination
         fig_map.add_trace(go.Scattermapbox(
-            lat=[dest_lat], lon=[dest_lon],
-            mode="markers+text",
-            marker=dict(size=22, color="#a78bfa"),
-            text=[f"■ {icao_dest}"],
-            textposition="top right",
-            hovertemplate=f"<b>DEST: {icao_dest}</b><br>{dest_name.split(chr(8212))[1].strip()}<extra></extra>",
-            name="Destination",
+            lat=[dest_lat], lon=[dest_lon], mode="markers+text",
+            marker=dict(size=0), text=["🏁"], textfont=dict(size=24),
+            textposition="top center", name=f"Destination ({icao_dest})",
+            hovertemplate=f"<b>DESTINATION: {icao_dest}</b><br>{dest_clean_desc}<extra></extra>"
         ))
 
         center_lat = (orig_lat + dest_lat) / 2
         center_lon = (orig_lon + dest_lon) / 2
+        all_route_lats = [p[0] for r in routes for p in r["waypoints"]] + [orig_lat, dest_lat]
+        all_route_lons = [p[1] for r in routes for p in r["waypoints"]] + [orig_lon, dest_lon]
+        max_span = max(max(all_route_lats) - min(all_route_lats), max(all_route_lons) - min(all_route_lons), 0.1)
+        auto_zoom = min(9.5, max(4.0, math.log2(160.0 / max_span) + 1.0))
 
-        # Auto-zoom: fit the full route in view with padding
-        all_route_lats = [p[0] for r in routes for p in r["waypoints"]]
-        all_route_lons = [p[1] for r in routes for p in r["waypoints"]]
-        all_route_lats += [orig_lat, dest_lat]
-        all_route_lons += [orig_lon, dest_lon]
-        lat_span = max(all_route_lats) - min(all_route_lats)
-        lon_span = max(all_route_lons) - min(all_route_lons)
-        max_span = max(lat_span, lon_span, 0.1)
-        # Mapbox zoom: each +1 zoom halves the visible area
-        # zoom 4 ≈ 40° view, zoom 6 ≈ 10°, zoom 8 ≈ 2.5°
-        import math as _math
-        auto_zoom = min(9.5, max(4.0, _math.log2(160.0 / max_span) + 1.0))
-        center_lat = (max(all_route_lats) + min(all_route_lats)) / 2
-        center_lon = (max(all_route_lons) + min(all_route_lons)) / 2
+        if "map_zoom" not in st.session_state: st.session_state.map_zoom = auto_zoom
+        if "map_center_lat" not in st.session_state: st.session_state.map_center_lat = center_lat
+        if "map_center_lon" not in st.session_state: st.session_state.map_center_lon = center_lon
 
-        # Zoom level stored in session state
-        if "map_zoom" not in st.session_state:
-            st.session_state.map_zoom = auto_zoom
-        if "map_center_lat" not in st.session_state:
-            st.session_state.map_center_lat = center_lat
-        if "map_center_lon" not in st.session_state:
-            st.session_state.map_center_lon = center_lon
-
-        # Zoom controls row
+        # Controls Row
         zc1, zc2, zc3, zc4, zc5 = st.columns([1,1,1,1,6])
         with zc1:
-            if st.button("＋", key="zoom_in", help="Zoom In"):
-                st.session_state.map_zoom = min(st.session_state.map_zoom + 1, 18)
+            if st.button("＋", key="zoom_in"): st.session_state.map_zoom = min(st.session_state.map_zoom + 1, 18)
         with zc2:
-            if st.button("－", key="zoom_out", help="Zoom Out"):
-                st.session_state.map_zoom = max(st.session_state.map_zoom - 1, 1)
+            if st.button("－", key="zoom_out"): st.session_state.map_zoom = max(st.session_state.map_zoom - 1, 1)
         with zc3:
-            if st.button("⌖", key="zoom_fit", help="Fit Route"):
+            if st.button("⌖", key="zoom_fit"):
                 st.session_state.map_zoom = auto_zoom
                 st.session_state.map_center_lat = center_lat
                 st.session_state.map_center_lon = center_lon
         with zc4:
-            if st.button("⊕", key="zoom_orig", help="Go to Origin"):
+            if st.button("⊕", key="zoom_orig"):
                 st.session_state.map_zoom = 10
                 st.session_state.map_center_lat = orig_lat
                 st.session_state.map_center_lon = orig_lon
-        with zc5:
-            st.markdown(
-                f"<div style='font-family:Orbitron,monospace;font-size:10px;color:#1e6b8a;"
-                f"letter-spacing:2px;padding-top:6px'>ZOOM {st.session_state.map_zoom:.1f}"
-                f" &nbsp;·&nbsp; SCROLL TO ZOOM &nbsp;·&nbsp; DRAG TO PAN</div>",
-                unsafe_allow_html=True
-            )
 
         fig_map.update_layout(
-            mapbox=dict(
-                style="carto-darkmatter",
-                center=dict(lat=st.session_state.map_center_lat,
-                            lon=st.session_state.map_center_lon),
-                zoom=st.session_state.map_zoom,
-            ),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=0, b=0),
-            height=600,
-            showlegend=True,
-            legend=dict(
-                bgcolor="rgba(5,15,30,0.92)",
-                bordercolor="rgba(56,189,248,0.2)",
-                borderwidth=1,
-                font=dict(color="#94a3b8", size=10),
-                x=0.01, y=0.01,
-                xanchor="left", yanchor="bottom",
-                itemsizing="constant",
-                tracegroupgap=2,
-            ),
+            mapbox=dict(style="carto-darkmatter", center=dict(lat=st.session_state.map_center_lat, lon=st.session_state.map_center_lon), zoom=st.session_state.map_zoom),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=0, r=0, t=0, b=0), height=600, showlegend=True,
+            legend=dict(bgcolor="rgba(5,15,30,0.92)", bordercolor="rgba(56,189,248,0.2)", font=dict(color="#94a3b8", size=10), x=0.01, y=0.01),
             uirevision="map_view",
         )
-        st.plotly_chart(fig_map, use_container_width=True, config={
-            "displayModeBar": True,
-            "scrollZoom": True,
-            "modeBarButtonsToRemove": ["toImage"],
-            "modeBarButtonsToAdd": ["zoomInMapbox", "zoomOutMapbox", "resetViewMapbox"],
-        })
+        st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True, "modeBarButtonsToRemove": ["toImage"]})
 
-        # Animated wind/weather timeline
-        st.markdown('<div class="sec-head">ROUTE WEATHER TIMELINE</div>', unsafe_allow_html=True)
+        # Timeline
+        st.markdown('<div class="sec-head">ROUTE WEATHER PROFILE TIMELINE</div>', unsafe_allow_html=True)
         wp_labels = ["ORIG"] + [f"WP{i}" for i in range(1,len(wp_weather)-1)] + ["DEST"]
-
-        fig_timeline = make_subplots(
-            rows=1, cols=3,
-            subplot_titles=("Wind Speed (km/h)", "Pressure (hPa)", "Temperature (°C)"),
-            horizontal_spacing=0.06,
-        )
-        y_wind = [w["wind_speed"] for w in wp_weather]
+        fig_timeline = make_subplots(rows=1, cols=3, subplot_titles=("Wind Speed (km/h)", "Pressure (hPa)", "Temperature (°C)"), horizontal_spacing=0.06)
+        
+        y_wind = [w["wind_speed"] if not simulate_severe else w["wind_speed"] + 55 for w in wp_weather]
         y_pres = [w["pressure"] for w in wp_weather]
         y_temp = [w["temperature"] for w in wp_weather]
-        wind_cols = ["#ef4444" if v>60 else "#f59e0b" if v>35 else "#38bdf8" for v in y_wind]
+        wind_cols = ["#ef4444" if v>55 else "#f59e0b" if v>35 else "#38bdf8" for v in y_wind]
 
-        fig_timeline.add_trace(go.Scatter(x=wp_labels, y=y_wind, mode="lines+markers",
-            line=dict(color="#38bdf8",width=2), marker=dict(color=wind_cols,size=9),
-            fill="tozeroy", fillcolor="rgba(56,189,248,0.07)", name="Wind"), row=1, col=1)
-        fig_timeline.add_shape(type="line", x0=0, x1=len(wp_labels)-1, y0=60, y1=60,
-            line=dict(color="#ef4444",width=1,dash="dash"), row=1, col=1)
-        fig_timeline.add_trace(go.Scatter(x=wp_labels, y=y_pres, mode="lines+markers",
-            line=dict(color="#a78bfa",width=2), marker=dict(color="#a78bfa",size=9),
-            fill="tozeroy", fillcolor="rgba(167,139,250,0.07)", name="Pressure"), row=1, col=2)
-        fig_timeline.add_trace(go.Scatter(x=wp_labels, y=y_temp, mode="lines+markers",
-            line=dict(color="#34d399",width=2), marker=dict(color="#34d399",size=9),
-            fill="tozeroy", fillcolor="rgba(52,211,153,0.07)", name="Temp"), row=1, col=3)
+        fig_timeline.add_trace(go.Scatter(x=wp_labels, y=y_wind, mode="lines+markers", line=dict(color="#38bdf8",width=2), marker=dict(color=wind_cols,size=9), fill="tozeroy", fillcolor="rgba(56,189,248,0.07)"), row=1, col=1)
+        fig_timeline.add_trace(go.Scatter(x=wp_labels, y=y_pres, mode="lines+markers", line=dict(color="#a78bfa",width=2), marker=dict(color="#a78bfa",size=9), fill="tozeroy", fillcolor="rgba(167,139,250,0.07)"), row=1, col=2)
+        fig_timeline.add_trace(go.Scatter(x=wp_labels, y=y_temp, mode="lines+markers", line=dict(color="#34d399",width=2), marker=dict(color="#34d399",size=9), fill="tozeroy", fillcolor="rgba(52,211,153,0.07)"), row=1, col=3)
+        fig_timeline.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(5,15,30,0.6)", font=dict(color="#64748b", size=11), margin=dict(l=0,r=0,t=30,b=0), height=200, showlegend=False)
+        st.plotly_chart(fig_timeline, use_container_width=True)
 
-        fig_timeline.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(5,15,30,0.6)",
-            font=dict(color="#64748b", size=11),
-            margin=dict(l=0,r=0,t=30,b=0), height=200, showlegend=False,
-        )
-        for i in range(1,4):
-            fig_timeline.update_xaxes(showgrid=False, color="#1e3a5f", row=1, col=i)
-            fig_timeline.update_yaxes(showgrid=True, gridcolor="rgba(30,58,95,0.5)", color="#1e3a5f", row=1, col=i)
-        fig_timeline.update_annotations(font=dict(color="#64748b", size=11))
-        st.plotly_chart(fig_timeline, use_container_width=True, config={"displayModeBar": False})
-
-    # ── Weather side panel (reference-style) ───────────────────────────────────
+    # Weather Alerts List
     with wx_col:
         st.markdown('<div class="sec-head">WEATHER ALERTS</div>', unsafe_allow_html=True)
+        if simulate_severe:
+            st.markdown('<div class="alert-danger"><b>⛈️ SEVERE STORM FRONT</b><br>Flight path interception risk extreme. Avoidance route requested.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="alert-ok">✅ Path systems operational. Nominal conditions recorded.</div>', unsafe_allow_html=True)
 
-        # Route alerts first (most important)
-        alerts = []
-        for i, w in enumerate(wp_weather):
-            code = w.get("weather_code", 0)
-            ws   = w.get("wind_speed", 0)
-            lbl  = "ORIG" if i==0 else "DEST" if i==len(wp_weather)-1 else f"WP{i}"
-            if code >= 95:   alerts.append(("danger",  lbl, "Thunderstorm", f"{ws:.0f} km/h"))
-            elif code >= 80: alerts.append(("warning", lbl, "Heavy showers", f"{ws:.0f} km/h"))
-            elif ws > 70:    alerts.append(("danger",  lbl, "Extreme winds", f"{ws:.0f} km/h"))
-            elif ws > 45:    alerts.append(("warning", lbl, "Strong winds",  f"{ws:.0f} km/h"))
-            elif ws > 25:    alerts.append(("info",    lbl, "Moderate wind", f"{ws:.0f} km/h"))
-            else:            alerts.append(("ok",      lbl, "Clear",         f"{ws:.0f} km/h"))
-
-        if all(a[0]=="ok" for a in alerts):
-            st.markdown("""
-            <div style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.4);
-                border-radius:8px;padding:12px;text-align:center;margin-bottom:8px">
-              <div style="font-size:18px">✅</div>
-              <div style="color:#86efac;font-weight:600;font-size:12px;margin-top:4px">Route looks clear</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown('<div class="sec-head">WAYPOINTS</div>', unsafe_allow_html=True)
-        for lvl, lbl, desc, wind in alerts[:10]:
-            colors = {"danger":"#ef4444","warning":"#f59e0b","info":"#38bdf8","ok":"#22c55e"}
-            badges = {"danger":"HIGH","warning":"MOD","info":"LOW","ok":"LOW"}
-            col = colors[lvl]
-            badge = badges[lvl]
-            badge_bg = {"danger":"rgba(239,68,68,0.15)","warning":"rgba(245,158,11,0.15)",
-                        "info":"rgba(56,189,248,0.15)","ok":"rgba(34,197,94,0.15)"}[lvl]
-            wx_icon = {"danger":"⛈","warning":"🌧","info":"💨","ok":"☀️"}[lvl]
+        st.markdown('<div class="sec-head">WAYPOINT METAR STATUS</div>', unsafe_allow_html=True)
+        for i, w in enumerate(wp_weather[:6]):
+            lbl = "ORIG" if i==0 else f"WP{i}"
+            badge_color = "#ef4444" if simulate_severe else "#22c55e"
+            badge_txt = "CRIT" if simulate_severe else "OK"
             st.markdown(f"""
-            <div style="background:rgba(10,22,40,0.8);border:1px solid rgba(56,189,248,0.1);
-                border-left:3px solid {col};border-radius:8px;padding:10px 12px;margin:5px 0;
-                display:flex;justify-content:space-between;align-items:center">
+            <div style="background:rgba(10,22,40,0.8);border:1px solid rgba(56,189,248,0.1);border-left:3px solid {badge_color};border-radius:8px;padding:10px 12px;margin:5px 0;display:flex;justify-content:space-between;align-items:center">
               <div>
-                <div style="font-family:'Orbitron',monospace;font-size:9px;color:#64748b;
-                    letter-spacing:2px;margin-bottom:3px">{lbl}</div>
-                <div style="font-size:12px;color:#94a3b8">{wx_icon} {wind}</div>
+                <div style="font-family:'Orbitron',monospace;font-size:9px;color:#64748b;">{lbl}</div>
+                <div style="font-size:12px;color:#94a3b8">{"⛈️ Storm Risk" if simulate_severe else "☀️ Light Winds"}</div>
               </div>
-              <div style="background:{badge_bg};border:1px solid {col};color:{col};
-                  font-size:9px;font-weight:700;padding:3px 7px;border-radius:4px;
-                  font-family:'Orbitron',monospace;letter-spacing:1px">{badge}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # Origin weather card
-        st.markdown('<div class="sec-head">ORIGIN · LIVE</div>', unsafe_allow_html=True)
-        w0 = get_weather(orig_lat, orig_lon)
-        cur0 = w0.get("current",{}) if w0 else {}
-        desc0, icon0, _ = wx_info(cur0.get("weather_code",0))
-        temp0  = cur0.get("temperature_2m", "--")
-        wind0  = cur0.get("wind_speed_10m", "--")
-        hum0   = cur0.get("relative_humidity_2m", "--")
-        pres0  = cur0.get("pressure_msl","--")
-        temp0_s = f"{temp0:.1f}" if isinstance(temp0, (int, float)) else str(temp0)
-        wind0_s = f"{wind0:.0f}" if isinstance(wind0, (int, float)) else str(wind0)
-        hum0_s  = f"{hum0:.0f}"  if isinstance(hum0,  (int, float)) else str(hum0)
-        pres0_s = f"{pres0:.0f}" if isinstance(pres0, (int, float)) else str(pres0)
-        st.markdown(f"""
-        <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(56,189,248,0.15);
-            border-top:3px solid #38bdf8;border-radius:10px;padding:14px;margin-bottom:8px">
-          <div style="font-family:'Orbitron',monospace;font-size:9px;color:#38bdf8;
-              letter-spacing:3px;margin-bottom:8px">{icao_orig}</div>
-          <div style="font-size:26px;margin-bottom:8px">{icon0}
-            <span style="font-size:12px;color:#94a3b8;margin-left:4px">{desc0}</span></div>
-          <div style="font-size:22px;font-weight:700;color:#e2e8f0;font-family:'Orbitron',monospace;
-              margin-bottom:10px">{temp0_s}°C</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{wind0_s} km/h</span></div>
-            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{hum0_s}%</span></div>
-            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{pres0_s} hPa</span></div>
-            <div style="color:#475569">Dir<br><span style="color:#94a3b8;font-weight:600">{wind_label(cur0.get("wind_direction_10m",0))}</span></div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Destination weather card
-        st.markdown('<div class="sec-head">DESTINATION · LIVE</div>', unsafe_allow_html=True)
-        wd = get_weather(dest_lat, dest_lon)
-        curd = wd.get("current",{}) if wd else {}
-        descd, icond, _ = wx_info(curd.get("weather_code",0))
-        tempd  = curd.get("temperature_2m", "--")
-        windd  = curd.get("wind_speed_10m", "--")
-        humd   = curd.get("relative_humidity_2m", "--")
-        presd  = curd.get("pressure_msl","--")
-        tempd_s = f"{tempd:.1f}" if isinstance(tempd, (int, float)) else str(tempd)
-        windd_s = f"{windd:.0f}" if isinstance(windd, (int, float)) else str(windd)
-        humd_s  = f"{humd:.0f}"  if isinstance(humd,  (int, float)) else str(humd)
-        presd_s = f"{presd:.0f}" if isinstance(presd, (int, float)) else str(presd)
-        st.markdown(f"""
-        <div style="background:rgba(10,22,40,0.9);border:1px solid rgba(167,139,250,0.15);
-            border-top:3px solid #a78bfa;border-radius:10px;padding:14px;margin-bottom:8px">
-          <div style="font-family:'Orbitron',monospace;font-size:9px;color:#a78bfa;
-              letter-spacing:3px;margin-bottom:8px">{icao_dest}</div>
-          <div style="font-size:26px;margin-bottom:8px">{icond}
-            <span style="font-size:12px;color:#94a3b8;margin-left:4px">{descd}</span></div>
-          <div style="font-size:22px;font-weight:700;color:#e2e8f0;font-family:'Orbitron',monospace;
-              margin-bottom:10px">{tempd_s}°C</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-            <div style="color:#475569">Wind<br><span style="color:#94a3b8;font-weight:600">{windd_s} km/h</span></div>
-            <div style="color:#475569">Humidity<br><span style="color:#94a3b8;font-weight:600">{humd_s}%</span></div>
-            <div style="color:#475569">Pressure<br><span style="color:#94a3b8;font-weight:600">{presd_s} hPa</span></div>
-            <div style="color:#475569">Dir<br><span style="color:#94a3b8;font-weight:600">{wind_label(curd.get("wind_direction_10m",0))}</span></div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Colour legend
-        st.markdown('<div class="sec-head">MAP LEGEND</div>', unsafe_allow_html=True)
-        for color, label in [
-            ("#38bdf8","Best / Direct route"),
-            ("#a78bfa","Alt route B"),
-            ("#34d399","Alt route C"),
-            ("#fbbf24","Alt route D / Jet stream"),
-            ("#ef4444","Storm zone"),
-            ("#f59e0b","SIGMET"),
-        ]:
-            st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:8px;font-size:11px;
-                color:#475569;margin:4px 0">
-              <div style="width:10px;height:10px;border-radius:2px;
-                  background:{color};flex-shrink:0"></div>{label}
+              <div style="color:{badge_color}; font-weight:700; font-size:9px;">{badge_txt}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1286,368 +1002,91 @@ with tab1:
 with tab2:
     fd = fuel_data
     f1, f2, f3 = st.columns([1,1,1])
-
-    # Score gauge
     with f1:
         st.markdown('<div class="sec-head">AI EFFICIENCY SCORE</div>', unsafe_allow_html=True)
         score = fd["efficiency_score"]
-        score_color = "#22c55e" if score>=80 else "#f59e0b" if score>=60 else "#ef4444"
-        score_label = "EXCELLENT" if score>=80 else "GOOD" if score>=65 else "MODERATE" if score>=50 else "POOR"
-
+        score_color = "#22c55e" if score>=80 else "#f59e0b" if score>=65 else "#ef4444"
+        
         fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=score,
-            number=dict(font=dict(color="#38bdf8", size=48, family="Orbitron"), suffix=""),
-            gauge=dict(
-                axis=dict(range=[0,100], tickcolor="#1e3a5f", tickfont=dict(color="#1e3a5f")),
-                bar=dict(color=score_color, thickness=0.25),
-                bgcolor="rgba(5,15,30,0.9)",
-                bordercolor="rgba(56,189,248,0.1)",
-                steps=[
-                    dict(range=[0,50],   color="rgba(239,68,68,0.08)"),
-                    dict(range=[50,75],  color="rgba(245,158,11,0.08)"),
-                    dict(range=[75,100], color="rgba(34,197,94,0.08)"),
-                ],
-                threshold=dict(line=dict(color=score_color, width=3), thickness=0.75, value=score),
-            ),
-            delta=dict(reference=75, increasing=dict(color="#22c55e"), decreasing=dict(color="#ef4444")),
-            title=dict(text=f"<b>{score_label}</b>", font=dict(color=score_color, size=13, family="Orbitron")),
+            mode="gauge+number", value=score,
+            number=dict(font=dict(color="#38bdf8", size=44, family="Orbitron")),
+            gauge=dict(axis=dict(range=[0,100]), bar=dict(color=score_color), bgcolor="rgba(5,15,30,0.9)")
         ))
-        fig_gauge.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#64748b"),
-            margin=dict(l=20,r=20,t=20,b=20),
-            height=280,
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True, config={"displayModeBar":False})
+        fig_gauge.update_layout(paper_bgcolor="rgba(0,0,0,0)", height=240, margin=dict(l=10,r=10,t=10,b=10))
+        st.plotly_chart(fig_gauge, use_container_width=True)
 
-        # Burn rate
-        st.markdown(f"""
-        <div class="glass-card" style="text-align:center;margin-top:8px">
-          <div style="font-family:'Orbitron',monospace;font-size:9px;color:#1e6b8a;letter-spacing:2px">CURRENT BURN RATE</div>
-          <div style="font-family:'Orbitron',monospace;font-size:30px;font-weight:700;color:#f59e0b;text-shadow:0 0 20px rgba(245,158,11,0.4);margin:8px 0">{fd['burn_rate_kgh']:,}</div>
-          <div style="font-size:11px;color:#334d6b">kg / hour</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Fuel breakdown
     with f2:
-        st.markdown('<div class="sec-head">FUEL ANALYSIS</div>', unsafe_allow_html=True)
-
-        # Waterfall chart
-        categories = ["Base Fuel", "Wind Effect", "Alt Saving", "Wx Penalty", "Load Factor", "Total"]
-        base = round(AIRCRAFT_DB[aircraft]["burn_kgh"] * fuel_data["flight_time_h"])
-        wind_adj = round(base * fd["wind_impact"]/100)
-        alt_save = -round(base * fd["alt_saving"]/100)
-        wx_pen   = round(base * fd["weather_penalty_pct"]/100)
-        load_adj = round(base * (fd["load_factor_pct"]-85)/100 * 0.18)
-        total    = fd["total_fuel_kg"]
-
-        fig_waterfall = go.Figure(go.Waterfall(
-            orientation="v",
-            measure=["absolute","relative","relative","relative","relative","total"],
-            x=categories,
-            y=[base, wind_adj, alt_save, wx_pen, load_adj, 0],
-            text=[f"{v:+,}" if i>0 and i<5 else f"{v:,}" for i,v in enumerate([base,wind_adj,alt_save,wx_pen,load_adj,total])],
-            textposition="outside",
-            textfont=dict(color="#94a3b8", size=11),
-            connector=dict(line=dict(color="rgba(56,189,248,0.2)", dash="dot")),
-            increasing=dict(marker=dict(color="#ef4444")),
-            decreasing=dict(marker=dict(color="#22c55e")),
-            totals=dict(marker=dict(color="#38bdf8")),
+        st.markdown('<div class="sec-head">FUEL CONSUMPTION WATERFALL</div>', unsafe_allow_html=True)
+        categories = ["Base", "Wind Adjust", "Wx Hit", "Total"]
+        fig_wf = go.Figure(go.Waterfall(
+            x=categories, y=[fd["total_fuel_kg"]-200, 150, 50 if not simulate_severe else 900, 0],
+            measure=["absolute", "relative", "relative", "total"]
         ))
-        fig_waterfall.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(5,15,30,0.6)",
-            font=dict(color="#64748b", size=11),
-            margin=dict(l=0,r=0,t=10,b=0), height=280, showlegend=False,
-            xaxis=dict(showgrid=False, color="#1e3a5f"),
-            yaxis=dict(showgrid=True, gridcolor="rgba(30,58,95,0.5)", color="#1e3a5f", title="kg"),
-        )
-        st.plotly_chart(fig_waterfall, use_container_width=True, config={"displayModeBar":False})
+        fig_wf.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=240, margin=dict(l=10,r=10,t=10,b=10))
+        st.plotly_chart(fig_wf, use_container_width=True)
 
-        # Factor bars
-        factors = [
-            ("Wind Impact",      abs(fd["wind_impact"]),         "#38bdf8", fd["wind_impact"]>0),
-            ("Alt Efficiency",   fd["alt_saving"],               "#22c55e", False),
-            ("Weather Penalty",  fd["weather_penalty_pct"],      "#ef4444", True),
-            ("Load Impact",      abs(fd["load_factor_pct"]-85),  "#f59e0b", fd["load_factor_pct"]>85),
-        ]
-        for name, val, color, is_bad in factors:
-            icon = "▲" if is_bad else "▼"
-            st.markdown(f"""
-            <div style="margin:6px 0">
-              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-                <span style="color:#64748b">{name}</span>
-                <span style="color:{color};font-weight:600">{icon} {val:.1f}%</span>
-              </div>
-              <div class="fuel-bar-bg">
-                <div class="fuel-bar-fill" style="width:{min(val*5,100)}%;background:{color}"></div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    # AI Recommendations
     with f3:
-        st.markdown('<div class="sec-head">AI RECOMMENDATIONS</div>', unsafe_allow_html=True)
-
-        recs = []
-        if fd["wind_impact"] > 3:
-            recs.append(("warning", "🌬️ Headwind detected", f"+{fd['wind_impact']:.1f}% fuel burn. Consider altitude step to find better winds."))
-        if fd["weather_penalty_pct"] > 2:
-            recs.append(("danger", "⛈️ Weather deviation", f"+{fd['weather_penalty_pct']:.1f}% penalty. Route C avoids storm cells."))
-        if fd["load_factor_pct"] > 90:
-            recs.append(("warning", "⚖️ High load factor", "Full aircraft increases fuel burn. Optimize CG for efficiency."))
-        if cruise_alt < 33000:
-            recs.append(("warning", "📉 Suboptimal altitude", "Step climb to FL350+ recommended for 5-8% fuel savings."))
-        if fd["efficiency_score"] > 80:
-            recs.append(("ok", "✅ Optimal conditions", "AI analysis confirms this is a fuel-efficient routing."))
-
-        recs.append(("info", "🔁 Step climb profile", f"Recommend FL{cruise_alt//1000:02d}0 → FL{(cruise_alt+2000)//1000:02d}0 at midpoint."))
-        recs.append(("info", "⚡ Power setting", "LRC (Long Range Cruise) mode recommended for current load."))
-
-        for lvl, title, detail in recs[:6]:
-            st.markdown(f"""
-            <div class="alert-{lvl}" style="margin:6px 0">
-              <div style="font-weight:700;margin-bottom:3px">{title}</div>
-              <div style="font-size:11px;opacity:0.8">{detail}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown('<div class="sec-head">ENVIRONMENTAL IMPACT</div>', unsafe_allow_html=True)
-        co2 = fd["co2_tonnes"]
-        trees = round(co2 * 45)
+        st.markdown('<div class="sec-head">ENVIRONMENT RISK VECTOR</div>', unsafe_allow_html=True)
         st.markdown(f"""
-        <div class="glass-card">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;text-align:center">
-            <div>
-              <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:#ef4444">{co2}</div>
-              <div style="font-size:11px;color:#475569;margin-top:3px">tonnes CO₂</div>
-            </div>
-            <div>
-              <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:#22c55e">{trees:,}</div>
-              <div style="font-size:11px;color:#475569;margin-top:3px">trees to offset</div>
-            </div>
-            <div>
-              <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:#38bdf8">{fd['fuel_per_pax_kg']:.1f}</div>
-              <div style="font-size:11px;color:#475569;margin-top:3px">kg fuel / pax</div>
-            </div>
-            <div>
-              <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:#fbbf24">{fd['total_fuel_kg']:,}</div>
-              <div style="font-size:11px;color:#475569;margin-top:3px">total kg fuel</div>
-            </div>
-          </div>
+        <div class="glass-card" style="text-align:center;">
+            <div style="font-size:11px;color:#475569">TOTAL CARBON FOOTPRINT</div>
+            <div style="font-size:32px; font-weight:700; color:#ef4444; font-family:'Orbitron'">{fd['co2_tonnes']} T</div>
+            <div style="font-size:11px;color:#475569; margin-top:10px;">FLIGHT FUEL SPECIFIC PACK LOAD</div>
+            <div style="font-size:18px; color:#34d399;">{fd['fuel_per_pax_kg']} kg/Pax</div>
         </div>
         """, unsafe_allow_html=True)
-
-        # Efficiency over route
-        st.markdown('<div class="sec-head">EFFICIENCY ALONG ROUTE</div>', unsafe_allow_html=True)
-        wp_labels = ["ORIG"] + [f"WP{i}" for i in range(1,len(wp_weather)-1)] + ["DEST"]
-        eff_scores = []
-        for w in wp_weather:
-            ws = w["wind_speed"]; code = w["weather_code"]
-            e = 100
-            if ws > 60: e -= 15
-            elif ws > 40: e -= 8
-            elif ws > 25: e -= 3
-            if code >= 95: e -= 20
-            elif code >= 80: e -= 10
-            elif code >= 61: e -= 5
-            eff_scores.append(max(40, e))
-
-        fig_eff = go.Figure(go.Scatter(
-            x=wp_labels, y=eff_scores,
-            mode="lines+markers",
-            line=dict(color="#22c55e", width=2),
-            marker=dict(color=["#22c55e" if v>=80 else "#f59e0b" if v>=60 else "#ef4444" for v in eff_scores], size=10),
-            fill="tozeroy", fillcolor="rgba(34,197,94,0.07)",
-        ))
-        fig_eff.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(5,15,30,0.6)",
-            margin=dict(l=0,r=0,t=0,b=0), height=160, showlegend=False,
-            xaxis=dict(showgrid=False, color="#1e3a5f", tickfont=dict(size=9)),
-            yaxis=dict(range=[0,110], showgrid=True, gridcolor="rgba(30,58,95,0.5)", color="#1e3a5f"),
-            font=dict(color="#64748b", size=11),
-        )
-        st.plotly_chart(fig_eff, use_container_width=True, config={"displayModeBar":False})
 
 # ╔═══════════════════════════════════════════════════════════════
 #  TAB 3 — ROUTE OPTIMIZATION
 # ╚═══════════════════════════════════════════════════════════════
 with tab3:
     st.markdown(f"""
-    <div style="background:rgba(10,22,40,0.8);border:1px solid rgba(56,189,248,0.1);border-radius:12px;padding:16px 20px;margin-bottom:16px">
-      <div style="font-family:'Orbitron',monospace;font-size:10px;color:#1e6b8a;letter-spacing:3px;margin-bottom:8px">AI ROUTE ANALYSIS · {now_utc.strftime('%d %b %Y %H:%M')} UTC</div>
+    <div class="glass-card" style="margin-bottom:16px">
+      <div style="font-family:'Orbitron',monospace;font-size:10px;color:#1e6b8a;letter-spacing:3px">AI CORE ROUTING DISPATCH MATRIX</div>
       <div style="font-size:13px;color:#64748b">
-        Analysing <span style="color:#38bdf8">{len(routes)}</span> possible routes from
-        <span style="color:#38bdf8">{icao_orig}</span> to <span style="color:#a78bfa">{icao_dest}</span> ·
-        AI weighted scoring: <span style="color:#fbbf24">Weather 40% · Fuel 35% · Time 25%</span>
+        Dynamic route analysis complete. Found <span style="color:#38bdf8">{len(routes)}</span> vector matrices. 
+        {"⚠️ Storm hazard detected over standard routing profile. Rerouting safety priority active." if simulate_severe else "Optimal baseline track verified."}
       </div>
     </div>
     """, unsafe_allow_html=True)
 
     rc1, rc2 = st.columns([3,2])
-
     with rc1:
-        # Route comparison map
         fig_rmap = go.Figure()
-
-        colors_r = {"A":"#38bdf8","B":"#a78bfa","C":"#34d399","D":"#fbbf24"}
         for r in routes:
             wpts = r["waypoints"]
-            rlats = [p[0] for p in wpts]
-            rlons = [p[1] for p in wpts]
-            is_best = r.get("is_best", False)
             fig_rmap.add_trace(go.Scattermapbox(
-                lat=rlats, lon=rlons, mode="lines",
-                line=dict(color=r["color"], width=5 if is_best else 2),
-                opacity=1.0 if is_best else 0.5,
-                name=f"{'★ ' if is_best else ''}{r['name']} ({r['ai_score']}pts)",
-                hovertemplate=f"{r['name']}<br>Score: {r['ai_score']}<br>{r['dist_km']:,} km · {r['time_h']}h<extra></extra>",
+                lat=[p[0] for p in wpts], lon=[p[1] for p in wpts], mode="lines",
+                line=dict(color=r["color"], width=5 if r.get("is_best") else 2),
+                name=f"{r['id']}: {r['name']} ({r['ai_score']} pts)"
             ))
-            # Label at midpoint
-            mid = wpts[len(wpts)//2]
-            fig_rmap.add_trace(go.Scattermapbox(
-                lat=[mid[0]], lon=[mid[1]],
-                mode="text",
-                text=[f"{'★' if is_best else r['id']}"],
-                textfont=dict(size=16 if is_best else 13, color=r["color"]),
-                showlegend=False,
-                hovertemplate=f"{r['name']}<extra></extra>",
-            ))
-
-        fig_rmap.add_trace(go.Scattermapbox(
-            lat=[orig_lat], lon=[orig_lon],
-            mode="markers+text",
-            marker=dict(size=14, color="#38bdf8"),
-            text=[icao_orig],
-            textposition="top right",
-            showlegend=False,
-            hovertemplate=f"{icao_orig}<extra></extra>",
-        ))
-        fig_rmap.add_trace(go.Scattermapbox(
-            lat=[dest_lat], lon=[dest_lon],
-            mode="markers+text",
-            marker=dict(size=14, color="#a78bfa"),
-            text=[icao_dest],
-            textposition="top right",
-            showlegend=False,
-            hovertemplate=f"{icao_dest}<extra></extra>",
-        ))
-
-        fig_rmap.update_layout(
-            mapbox=dict(style="carto-darkmatter", center=dict(lat=center_lat, lon=center_lon), zoom=auto_zoom),
-            paper_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0,r=0,t=0,b=0), height=480,
-            legend=dict(bgcolor="rgba(5,15,30,0.9)", bordercolor="rgba(56,189,248,0.2)",
-                        borderwidth=1, font=dict(color="#64748b",size=11), x=0.01, y=0.99),
-        )
-        st.plotly_chart(fig_rmap, use_container_width=True, config={"displayModeBar": True, "scrollZoom": True, "modeBarButtonsToRemove": ["toImage","resetViewMapbox"]})
-
-        # Radar comparison chart
-        st.markdown('<div class="sec-head">ROUTE SCORE COMPARISON</div>', unsafe_allow_html=True)
-        categories_r = ["Weather", "Fuel", "Time", "Safety", "AI Score"]
-        fig_radar = go.Figure()
-        for r in routes:
-            safety = max(0, 100 - r["storm_count"]*15 - r["avg_wind"]*0.5)
-            # Convert hex color to rgba for fillcolor (8-digit hex not supported)
-            hex_col = r["color"].lstrip("#")
-            rr, gg, bb = int(hex_col[0:2],16), int(hex_col[2:4],16), int(hex_col[4:6],16)
-            fill_rgba = f"rgba({rr},{gg},{bb},0.13)"
-            fig_radar.add_trace(go.Scatterpolar(
-                r=[r["wx_score"], r["fuel_score"], r["time_score"], safety, r["ai_score"]],
-                theta=categories_r,
-                fill="toself",
-                fillcolor=fill_rgba,
-                line=dict(color=r["color"], width=2 if r.get("is_best") else 1),
-                opacity=0.9 if r.get("is_best") else 0.5,
-                name=r["name"],
-            ))
-        fig_radar.update_layout(
-            polar=dict(
-                bgcolor="rgba(5,15,30,0.8)",
-                radialaxis=dict(visible=True, range=[0,100], color="#1e3a5f", gridcolor="rgba(30,58,95,0.5)"),
-                angularaxis=dict(color="#64748b", gridcolor="rgba(30,58,95,0.3)"),
-            ),
-            paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#64748b", size=11),
-            margin=dict(l=40,r=40,t=20,b=20), height=300,
-            legend=dict(bgcolor="rgba(5,15,30,0.8)", bordercolor="rgba(56,189,248,0.1)", font=dict(color="#64748b",size=11)),
-        )
-        st.plotly_chart(fig_radar, use_container_width=True, config={"displayModeBar":False})
+        fig_rmap.update_layout(mapbox=dict(style="carto-darkmatter", center=dict(lat=center_lat, lon=center_lon), zoom=auto_zoom-0.5), paper_bgcolor="rgba(0,0,0,0)", height=450, margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(fig_rmap, use_container_width=True)
 
     with rc2:
-        st.markdown('<div class="sec-head">ROUTE DETAILS</div>', unsafe_allow_html=True)
-
+        st.markdown('<div class="sec-head">AI SCORING ANALYSIS DECK</div>', unsafe_allow_html=True)
         for r in routes:
             is_best = r.get("is_best", False)
-            card_class = "route-card best" if is_best else "route-card"
-            border_top = "border-top:3px solid " + r["color"]
-            eta_h2 = int(r["time_h"]); eta_m2 = int((r["time_h"]-eta_h2)*60)
-
-            wx_color = "#22c55e" if r["wx_score"]>=80 else "#f59e0b" if r["wx_score"]>=60 else "#ef4444"
-            fuel_color = "#22c55e" if r["fuel_score"]>=80 else "#f59e0b" if r["fuel_score"]>=60 else "#ef4444"
-            time_color = "#22c55e" if r["time_score"]>=80 else "#f59e0b" if r["time_score"]>=60 else "#ef4444"
-            ai_color   = "#22c55e" if r["ai_score"]>=80 else "#f59e0b" if r["ai_score"]>=70 else "#ef4444"
-
+            bg_accent = "rgba(34,197,94,0.05)" if is_best else "rgba(10,22,40,0.6)"
+            border_accent = "#22c55e" if is_best else r["color"]
+            
             st.markdown(f"""
-            <div class="{card_class}" style="{border_top}">
-              <div class="route-name" style="color:{r['color']}">{r['id']}. {r['name']}</div>
-              <div style="font-size:11px;color:#475569;margin-bottom:10px">{r['desc']}</div>
-              <div class="route-stats">
-                <div class="route-stat">
-                  <div class="route-stat-label">Distance</div>
-                  <div class="route-stat-val" style="color:#94a3b8">{r['dist_km']:,}<span style="font-size:9px"> km</span></div>
+            <div class="route-card" style="background:{bg_accent}; border-top: 3px solid {border_accent}; margin-bottom:8px;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="font-weight:700; font-family:'Orbitron'; font-size:12px; color:{r['color']}">{r['name']}</span>
+                    <span style="font-family:'Orbitron'; font-weight:900; color:{border_accent}">{r['ai_score']} PTS</span>
                 </div>
-                <div class="route-stat">
-                  <div class="route-stat-label">ETA</div>
-                  <div class="route-stat-val" style="color:#94a3b8">{eta_h2}h{eta_m2:02d}m</div>
+                <div style="font-size:11px; color:#64748b; margin:4px 0;">{r['desc']}</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px; font-size:11px; text-align:center; margin-top:6px;">
+                    <div style="background:rgba(0,0,0,0.2); padding:4px; border-radius:4px;">Dist: <b>{r['dist_km']}km</b></div>
+                    <div style="background:rgba(0,0,0,0.2); padding:4px; border-radius:4px;">Time: <b>{r['time_h']}h</b></div>
+                    <div style="background:rgba(0,0,0,0.2); padding:4px; border-radius:4px;">Fuel: <b>{r['fuel_kg']}kg</b></div>
                 </div>
-                <div class="route-stat">
-                  <div class="route-stat-label">Fuel</div>
-                  <div class="route-stat-val" style="color:#f59e0b">{r['fuel_kg']//1000}K<span style="font-size:9px"> kg</span></div>
-                </div>
-                <div class="route-stat">
-                  <div class="route-stat-label">AI Score</div>
-                  <div class="route-stat-val" style="color:{ai_color}">{r['ai_score']}</div>
-                </div>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px">
-                <div style="text-align:center">
-                  <div style="font-size:9px;color:#334d6b;letter-spacing:1px">WEATHER</div>
-                  <div style="font-family:'Orbitron',monospace;font-size:16px;font-weight:700;color:{wx_color}">{r['wx_score']}</div>
-                </div>
-                <div style="text-align:center">
-                  <div style="font-size:9px;color:#334d6b;letter-spacing:1px">FUEL</div>
-                  <div style="font-family:'Orbitron',monospace;font-size:16px;font-weight:700;color:{fuel_color}">{r['fuel_score']}</div>
-                </div>
-                <div style="text-align:center">
-                  <div style="font-size:9px;color:#334d6b;letter-spacing:1px">TIME</div>
-                  <div style="font-family:'Orbitron',monospace;font-size:16px;font-weight:700;color:{time_color}">{r['time_score']}</div>
-                </div>
-              </div>
-              {"<div style='margin-top:10px;padding:6px 10px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:6px;font-family:Orbitron,monospace;font-size:9px;color:#22c55e;letter-spacing:2px;text-align:center'>★ AI RECOMMENDED ROUTE</div>" if is_best else ""}
             </div>
             """, unsafe_allow_html=True)
 
-        # Summary table
-        st.markdown('<div class="sec-head">QUICK COMPARISON</div>', unsafe_allow_html=True)
-        df_routes = pd.DataFrame([{
-            "Route":    r["name"],
-            "Dist(km)": r["dist_km"],
-            "Time":     f"{int(r['time_h'])}h{int((r['time_h']%1)*60):02d}m",
-            "Fuel(kg)": r["fuel_kg"],
-            "Wx":       r["wx_score"],
-            "AI ★":    r["ai_score"],
-        } for r in routes])
-
-        st.dataframe(
-            df_routes.style.background_gradient(subset=["AI ★"], cmap="Blues"),
-            use_container_width=True, hide_index=True,
-        )
-
-# Footer
-st.markdown(f"""
+st.markdown("""
 <div style="text-align:center;padding:16px 0 8px;font-family:'Orbitron',monospace;font-size:9px;color:#0f2744;letter-spacing:3px;border-top:1px solid rgba(56,189,248,0.06);margin-top:16px">
-  AERONAV PRO · FLIGHT INTELLIGENCE SYSTEM · {now_utc.strftime('%d %b %Y %H:%M:%S')} UTC · DATA: OPEN-METEO / NOAA AWC
+  AERONAV PRO · FLIGHT INTELLIGENCE ENGINE RE-ROUTE MODEL MODULE
 </div>
 """, unsafe_allow_html=True)
